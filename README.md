@@ -10,6 +10,27 @@ over-the-air firmware updates triggered from an MQTT broker.
 
 ---
 
+## About this fork
+
+This fork adds compatibility with [DuetWebControl](https://github.com/Duet3D/DuetWebControl)'s
+[Duet Tool Align](https://github.com/jaysuk/duet-tool-align) plugin, which expects both a live
+MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
+
+- `capture_handler` (the existing snapshot logic behind `GET /`) now also sends
+  `Cache-Control: no-store, no-cache, must-revalidate` and `Pragma: no-cache`, and is additionally
+  registered at **`GET /snapshot`**.
+- The existing `/stream` handler (already async — it hands off to a per-client worker task and
+  returns immediately, see `mjpeg_client_worker_task`) is now also registered on the **port-80**
+  server, alongside the original port-81 stream server. Both routes are unaffected.
+
+With this, point the plugin's "Camera bridge URL" at `http://<device-ip>` (or `http://<device-id>.local`)
+with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration, BLE
+provisioning) are untouched — see below.
+
+Everything else in this README describes the upstream project as-is.
+
+---
+
 ## Quick Start
 
 1. **Flash** — `bash build.sh && bash flash.sh`

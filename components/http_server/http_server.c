@@ -129,6 +129,8 @@ static esp_err_t capture_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
 
     // 4. Send the payload
     esp_err_t res;
@@ -1046,7 +1048,7 @@ esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.core_id = 1;
     config.stack_size = 8192;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12; // 8 original + /snapshot + /stream (plugin compatibility)
     config.max_open_sockets = 10;
     config.recv_wait_timeout = 5;   // 5s recv timeout to prevent WDT panics on network stall
     config.send_wait_timeout = 5;   // 5s send timeout to prevent WDT panics on network stall
@@ -1062,6 +1064,28 @@ esp_err_t start_http_server(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(s_server, &capture_uri);
+
+        // /snapshot: same handler as "/", registered under the path the Duet Tool Align
+        // DWC plugin (and duet-webcam-bridge before it) expects from a camera bridge.
+        httpd_uri_t snapshot_uri = {
+            .uri       = "/snapshot",
+            .method    = HTTP_GET,
+            .handler   = capture_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &snapshot_uri);
+
+        // /stream on port 80 too: stream_handler hands off to an async worker task
+        // immediately (see mjpeg_client_worker_task) rather than blocking the httpd
+        // task, so it's safe to serve alongside the routes above from one origin --
+        // the plugin needs /stream and /snapshot on the same bridgeUrl/port.
+        httpd_uri_t stream_uri_p80 = {
+            .uri       = "/stream",
+            .method    = HTTP_GET,
+            .handler   = stream_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &stream_uri_p80);
 
         httpd_uri_t health_uri = {
             .uri       = "/health",
