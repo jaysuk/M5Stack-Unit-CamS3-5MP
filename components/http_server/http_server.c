@@ -374,6 +374,16 @@ static void mjpeg_broadcaster_task(void *arg)
 
         // Copy to a new pool buffer for broadcast
         frame_buffer_t *new_fb = frame_pool_get(100); // 100ms timeout
+        if (new_fb && fb->len > new_fb->capacity) {
+            // Pool buffers are sized for the resolutions this board actually captures (measured
+            // up to ~100KB at UXGA against a 512KB buffer); this only guards against a JPEG that
+            // somehow exceeds that, since memcpy below has no bounds of its own and would corrupt
+            // adjacent PSRAM heap otherwise.
+            ESP_LOGE(TAG, "Captured frame (%zu B) exceeds pool buffer capacity (%zu B), dropping",
+                     fb->len, new_fb->capacity);
+            frame_pool_unref(new_fb);
+            new_fb = NULL;
+        }
         if (new_fb) {
             memcpy(new_fb->buf, fb->buf, fb->len);
             new_fb->len = fb->len;
