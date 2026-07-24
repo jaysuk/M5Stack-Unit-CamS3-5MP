@@ -22,6 +22,14 @@ MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
 - The existing `/stream` handler (already async — it hands off to a per-client worker task and
   returns immediately, see `mjpeg_client_worker_task`) is now also registered on the **port-80**
   server, alongside the original port-81 stream server. Both routes are unaffected.
+- The broadcaster's frame copy into the shared pool buffer is now bounds-checked (was an
+  unchecked `memcpy`, harmless in practice at every resolution this board actually produces, but
+  a real overflow risk if a frame ever exceeded the pool's buffer size).
+- **Brightness/contrast/saturation/white-balance are now on `/setup`** (previously MQTT-only, so
+  tuning image quality required running a broker). Applied live and persisted like the other
+  fields. Also corrected `apply_camera_settings()`'s defaults, which were quietly applying the
+  sensor's *darkest*/least-saturated setting at every boot rather than neutral — see the commit
+  for why (mega_ccm.c register indices, not the generic OV-sensor `-2..2` convention).
 
 With this, point the plugin's "Camera bridge URL" at `http://<device-ip>` (or `http://<device-id>.local`)
 with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration, BLE
