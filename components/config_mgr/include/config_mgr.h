@@ -25,6 +25,14 @@ uint8_t     config_mgr_get_jpeg_quality(void);
 const char *config_mgr_get_ota_token(void);
 const char *config_mgr_get_coredump_token(void);
 
+/* PY260/mega_ccm sensor register indices -- NOT the generic OV-sensor -2..2
+ * convention. See components/esp32-camera/sensors/mega_ccm.c set_brightness/
+ * set_contrast/set_saturation/set_wb_mode for the authoritative mapping. */
+uint8_t     config_mgr_get_brightness(void);   /* 0-8, 4 = neutral */
+uint8_t     config_mgr_get_contrast(void);     /* 0-6, 3 = neutral */
+uint8_t     config_mgr_get_saturation(void);   /* 0-6, 3 = neutral */
+uint8_t     config_mgr_get_wb_mode(void);      /* 0=Auto 1=Sunny 2=Office 3=Cloudy 4=Home */
+
 /* Setters (update in-memory state only — call config_mgr_save() to persist) */
 void config_mgr_set_mqtt_url(const char *v);
 void config_mgr_set_mqtt_user(const char *v);
@@ -35,6 +43,10 @@ void config_mgr_set_cam_resolution(uint8_t v);
 void config_mgr_set_jpeg_quality(uint8_t v);
 void config_mgr_set_ota_token(const char *v);
 void config_mgr_set_coredump_token(const char *v);
+void config_mgr_set_brightness(uint8_t v);
+void config_mgr_set_contrast(uint8_t v);
+void config_mgr_set_saturation(uint8_t v);
+void config_mgr_set_wb_mode(uint8_t v);
 
 /**
  * @brief Write all fields to NVS.

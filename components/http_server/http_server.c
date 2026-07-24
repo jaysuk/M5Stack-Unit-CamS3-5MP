@@ -740,7 +740,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
     const esp_app_desc_t *app = esp_app_get_description();
 
-    char buf[3072];
+    char buf[4096];
     int pos = 0;
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
@@ -818,6 +818,30 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "</select>"
         "<label>JPEG Quality (1=best, 63=lowest)</label>"
         "<input type='text' name='jpeg_qual' value='%u'>"
+
+        "<label>Brightness (0-8, 4=default)</label>"
+        "<input type='text' name='brightness' value='%u'>"
+        "<label>Contrast (0-6, 3=default)</label>"
+        "<input type='text' name='contrast' value='%u'>"
+        "<label>Saturation (0-6, 3=default)</label>"
+        "<input type='text' name='saturation' value='%u'>"
+        "<label>White Balance</label>"
+        "<select name='wb_mode'>",
+        config_mgr_get_jpeg_quality(),
+        config_mgr_get_brightness(),
+        config_mgr_get_contrast(),
+        config_mgr_get_saturation());
+
+    static const char *wb_names[] = {"Auto", "Sunny", "Office", "Cloudy", "Home"};
+    uint8_t cur_wb = config_mgr_get_wb_mode();
+    for (int i = 0; i < 5; i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "<option value='%d'%s>%s</option>",
+            i, (cur_wb == i) ? " selected" : "", wb_names[i]);
+    }
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "</select>"
         "<br><input type='submit' value='Save &amp; Restart'>"
         "<script>function tog(){var e=document.getElementById('mqtt_en').checked;"
         "var d=document.getElementById('mqtt_fields');"
@@ -836,8 +860,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "style='background:#dc2626;color:#fff;border:none;padding:8px 16px;"
         "border-radius:4px;cursor:pointer;font-size:1em'>"
         "</form></details>"
-        "</body></html>",
-        config_mgr_get_jpeg_quality());
+        "</body></html>");
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, buf, pos);
@@ -887,7 +910,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
 /* POST /setup — parse form body, update config, schedule restart */
 static esp_err_t setup_post_handler(httpd_req_t *req)
 {
-#define SETUP_BODY_MAX 768
+#define SETUP_BODY_MAX 1024
     char body[SETUP_BODY_MAX + 1];
     int total = req->content_len;
     if (total > SETUP_BODY_MAX) total = SETUP_BODY_MAX;
@@ -918,6 +941,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     bool mqtt_en        = false;
     char cam_res_s[8]   = {0};
     char jpeg_qual_s[8] = {0};
+    char brightness_s[8] = {0};
+    char contrast_s[8]   = {0};
+    char saturation_s[8] = {0};
+    char wb_mode_s[8]    = {0};
 
     char *saveptr = NULL;
     char *pair = strtok_r(body, "&", &saveptr);
@@ -939,6 +966,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
             else if (strcmp(key, "mqtt_en")   == 0) mqtt_en = (decoded[0] == '1');
             else if (strcmp(key, "cam_res")   == 0) strlcpy(cam_res_s,   decoded, sizeof(cam_res_s));
             else if (strcmp(key, "jpeg_qual") == 0) strlcpy(jpeg_qual_s, decoded, sizeof(jpeg_qual_s));
+            else if (strcmp(key, "brightness") == 0) strlcpy(brightness_s, decoded, sizeof(brightness_s));
+            else if (strcmp(key, "contrast")   == 0) strlcpy(contrast_s,   decoded, sizeof(contrast_s));
+            else if (strcmp(key, "saturation") == 0) strlcpy(saturation_s, decoded, sizeof(saturation_s));
+            else if (strcmp(key, "wb_mode")    == 0) strlcpy(wb_mode_s,    decoded, sizeof(wb_mode_s));
         }
         pair = strtok_r(NULL, "&", &saveptr);
     }
@@ -958,6 +989,27 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid cam_res");
         return ESP_FAIL;
     }
+    // mega_ccm.c register indices (see config_mgr.h) -- not the generic OV-sensor -2..2 range.
+    int brightness = atoi(brightness_s);
+    if (brightness < 0 || brightness > 8) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "brightness must be 0-8");
+        return ESP_FAIL;
+    }
+    int contrast = atoi(contrast_s);
+    if (contrast < 0 || contrast > 6) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "contrast must be 0-6");
+        return ESP_FAIL;
+    }
+    int saturation = atoi(saturation_s);
+    if (saturation < 0 || saturation > 6) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "saturation must be 0-6");
+        return ESP_FAIL;
+    }
+    int wb_mode = atoi(wb_mode_s);
+    if (wb_mode < 0 || wb_mode > 4) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "wb_mode must be 0-4");
+        return ESP_FAIL;
+    }
 
     /* Apply to in-memory config */
     config_mgr_set_mqtt_url(mqtt_url);
@@ -969,6 +1021,21 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     config_mgr_set_mqtt_enabled(mqtt_en);
     config_mgr_set_cam_resolution((uint8_t)cam_res);
     config_mgr_set_jpeg_quality((uint8_t)jpeg_qual);
+    config_mgr_set_brightness((uint8_t)brightness);
+    config_mgr_set_contrast((uint8_t)contrast);
+    config_mgr_set_saturation((uint8_t)saturation);
+    config_mgr_set_wb_mode((uint8_t)wb_mode);
+
+    // Apply brightness/contrast/saturation/wb_mode immediately (no camera reinit needed --
+    // same live sensor register writes mqtt_mgr already does for these). cam_res/jpeg_qual
+    // still need the reboot below since they require re-running esp_camera_init().
+    sensor_t *s = esp_camera_sensor_get();
+    if (s) {
+        if (s->set_brightness) s->set_brightness(s, brightness);
+        if (s->set_contrast) s->set_contrast(s, contrast);
+        if (s->set_saturation) s->set_saturation(s, saturation);
+        if (s->set_wb_mode) s->set_wb_mode(s, wb_mode);
+    }
 
     ESP_LOGI(TAG, "Setup POST: url=%s user=%s dev=%s mqtt_en=%d res=%d qual=%d",
              mqtt_url, mqtt_user, device_id, mqtt_en, cam_res, jpeg_qual);

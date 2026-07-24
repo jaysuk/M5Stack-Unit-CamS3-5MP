@@ -18,6 +18,10 @@ static const char *TAG = "config_mgr";
 #define KEY_JPEG_QUAL  "jpeg_qual"
 #define KEY_OTA_TOKEN  "ota_token"
 #define KEY_CD_TOKEN   "cd_token"
+#define KEY_BRIGHTNESS "brightness"
+#define KEY_CONTRAST   "contrast"
+#define KEY_SATURATION "saturation"
+#define KEY_WB_MODE    "wb_mode"
 
 /* Field size limits (including null terminator) */
 #define MQTT_URL_MAX   128
@@ -31,6 +35,13 @@ static const char *TAG = "config_mgr";
 #define DEFAULT_CAM_RES   10
 #define DEFAULT_JPEG_QUAL 12
 
+/* mega_ccm.c register indices -- these are the sensor's neutral/"0" settings,
+ * not 0. See config_mgr_get_brightness() etc. in the header. */
+#define DEFAULT_BRIGHTNESS 4
+#define DEFAULT_CONTRAST   3
+#define DEFAULT_SATURATION 3
+#define DEFAULT_WB_MODE    0
+
 /* In-memory config state */
 static char s_mqtt_url[MQTT_URL_MAX];
 static char s_mqtt_user[MQTT_USER_MAX];
@@ -41,6 +52,10 @@ static char s_cd_token[CD_TOKEN_MAX];
 static bool    s_mqtt_en;
 static uint8_t s_cam_res;
 static uint8_t s_jpeg_qual;
+static uint8_t s_brightness;
+static uint8_t s_contrast;
+static uint8_t s_saturation;
+static uint8_t s_wb_mode;
 
 static bool s_initialized = false;
 
@@ -111,6 +126,10 @@ esp_err_t config_mgr_init(void)
         s_mqtt_en  = true;
         s_cam_res  = DEFAULT_CAM_RES;
         s_jpeg_qual = DEFAULT_JPEG_QUAL;
+        s_brightness = DEFAULT_BRIGHTNESS;
+        s_contrast   = DEFAULT_CONTRAST;
+        s_saturation = DEFAULT_SATURATION;
+        s_wb_mode    = DEFAULT_WB_MODE;
         s_initialized = true;
         return ESP_OK;
     }
@@ -120,7 +139,15 @@ esp_err_t config_mgr_init(void)
     load_u8(nh, KEY_MQTT_EN,   &mqtt_en_u8,   1);
     load_u8(nh, KEY_CAM_RES,   &s_cam_res,    DEFAULT_CAM_RES);
     load_u8(nh, KEY_JPEG_QUAL, &s_jpeg_qual,  DEFAULT_JPEG_QUAL);
+    load_u8(nh, KEY_BRIGHTNESS, &s_brightness, DEFAULT_BRIGHTNESS);
+    load_u8(nh, KEY_CONTRAST,   &s_contrast,   DEFAULT_CONTRAST);
+    load_u8(nh, KEY_SATURATION, &s_saturation, DEFAULT_SATURATION);
+    load_u8(nh, KEY_WB_MODE,    &s_wb_mode,    DEFAULT_WB_MODE);
     s_mqtt_en = (mqtt_en_u8 != 0);
+    if (s_brightness > 8) s_brightness = DEFAULT_BRIGHTNESS;
+    if (s_contrast   > 6) s_contrast   = DEFAULT_CONTRAST;
+    if (s_saturation > 6) s_saturation = DEFAULT_SATURATION;
+    if (s_wb_mode    > 4) s_wb_mode    = DEFAULT_WB_MODE;
 
     /* Validate cam_res against PY260-supported framesizes.
      * Reject values that mega_ccm.c does not handle — previously stored
@@ -152,6 +179,10 @@ uint8_t     config_mgr_get_cam_resolution(void){ return s_cam_res; }
 uint8_t     config_mgr_get_jpeg_quality(void)  { return s_jpeg_qual; }
 const char *config_mgr_get_ota_token(void)     { return s_ota_token; }
 const char *config_mgr_get_coredump_token(void) { return s_cd_token; }
+uint8_t     config_mgr_get_brightness(void)    { return s_brightness; }
+uint8_t     config_mgr_get_contrast(void)      { return s_contrast; }
+uint8_t     config_mgr_get_saturation(void)    { return s_saturation; }
+uint8_t     config_mgr_get_wb_mode(void)       { return s_wb_mode; }
 
 /* --- Setters (update in-memory only) --- */
 
@@ -178,6 +209,26 @@ void config_mgr_set_jpeg_quality(uint8_t v)
 }
 void config_mgr_set_ota_token(const char *v)     { strlcpy(s_ota_token, v, sizeof(s_ota_token)); }
 void config_mgr_set_coredump_token(const char *v) { strlcpy(s_cd_token,  v, sizeof(s_cd_token)); }
+void config_mgr_set_brightness(uint8_t v)
+{
+    if (v > 8) { ESP_LOGW(TAG, "set_brightness: %u out of range (0-8) — ignoring", v); return; }
+    s_brightness = v;
+}
+void config_mgr_set_contrast(uint8_t v)
+{
+    if (v > 6) { ESP_LOGW(TAG, "set_contrast: %u out of range (0-6) — ignoring", v); return; }
+    s_contrast = v;
+}
+void config_mgr_set_saturation(uint8_t v)
+{
+    if (v > 6) { ESP_LOGW(TAG, "set_saturation: %u out of range (0-6) — ignoring", v); return; }
+    s_saturation = v;
+}
+void config_mgr_set_wb_mode(uint8_t v)
+{
+    if (v > 4) { ESP_LOGW(TAG, "set_wb_mode: %u out of range (0-4) — ignoring", v); return; }
+    s_wb_mode = v;
+}
 
 /* --- Persist to NVS --- */
 
@@ -206,6 +257,10 @@ esp_err_t config_mgr_save(void)
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_MQTT_EN,   s_mqtt_en ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_CAM_RES,   s_cam_res);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_JPEG_QUAL, s_jpeg_qual);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_BRIGHTNESS, s_brightness);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_CONTRAST,   s_contrast);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_SATURATION, s_saturation);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_WB_MODE,    s_wb_mode);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set failed err=0x%x — aborting save without commit", err);

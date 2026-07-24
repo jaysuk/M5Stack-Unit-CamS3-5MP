@@ -89,16 +89,8 @@ static camera_config_t camera_config = {
 // ========================================
 // Camera Image Quality Configuration
 // ========================================
-// Brightness: -2 to 2 (0 = normal)
-#define CAM_BRIGHTNESS      0
-// Contrast: -2 to 2 (0 = normal)
-#define CAM_CONTRAST        0
-// Saturation: -2 to 2 (0 = normal)
-#define CAM_SATURATION      0
 // Special Effect: 0 = No Effect, 1 = Negative, 2 = Grayscale, 3 = Red Tint, 4 = Green Tint, 5 = Blue Tint, 6 = Sepia
 #define CAM_SPECIAL_EFFECT  0
-// White Balance Mode: 0 = Auto, 1 = Sunny, 2 = Cloudy, 3 = Office, 4 = Home
-#define CAM_WB_MODE         3
 // Auto Exposure Control: 0 = Disable, 1 = Enable
 #define CAM_AEC             1
 
@@ -111,15 +103,17 @@ static void apply_camera_settings(void)
     }
 
     ESP_LOGI(TAG, "Applying camera settings...");
-    
-    if (s->set_brightness) s->set_brightness(s, CAM_BRIGHTNESS);
-    if (s->set_contrast) s->set_contrast(s, CAM_CONTRAST);
-    if (s->set_saturation) s->set_saturation(s, CAM_SATURATION);
+
+    // Brightness/contrast/saturation/wb_mode are mega_ccm.c register indices (0-8/0-6/0-6/0-4,
+    // NOT the generic OV-sensor -2..2 range), configurable at runtime via /setup -- see config_mgr.h.
+    if (s->set_brightness) s->set_brightness(s, config_mgr_get_brightness());
+    if (s->set_contrast) s->set_contrast(s, config_mgr_get_contrast());
+    if (s->set_saturation) s->set_saturation(s, config_mgr_get_saturation());
     if (s->set_special_effect) s->set_special_effect(s, CAM_SPECIAL_EFFECT);
-    if (s->set_wb_mode) s->set_wb_mode(s, CAM_WB_MODE);
+    if (s->set_wb_mode) s->set_wb_mode(s, config_mgr_get_wb_mode());
     if (s->set_exposure_ctrl) s->set_exposure_ctrl(s, CAM_AEC);
     // set_whitebal, set_awb_gain, set_gain_ctrl are not implemented by PY260 (wired to set_dummy)
-    
+
     ESP_LOGI(TAG, "Camera settings applied");
 }
 
