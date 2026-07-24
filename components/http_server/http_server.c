@@ -842,7 +842,12 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "</select>"
-        "<br><input type='submit' value='Save &amp; Restart'>"
+        "<p style='font-size:0.85em;color:#6b7280;margin-bottom:4px'>"
+        "\"Apply Now\" takes effect immediately with no reboot, but is lost on the next restart "
+        "unless you also use \"Save &amp; Restart\" at some point (which saves everything on this "
+        "page, image settings included).</p>"
+        "<input type='submit' formaction='/setup/image' value='Apply Now (Brightness/Contrast/Saturation/WB only)'>"
+        " <input type='submit' value='Save &amp; Restart'>"
         "<script>function tog(){var e=document.getElementById('mqtt_en').checked;"
         "var d=document.getElementById('mqtt_fields');"
         "d.style.opacity=e?'1':'0.4';"
@@ -905,6 +910,86 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     httpd_resp_send(req, resp_html, strlen(resp_html));
     xTaskCreate(factory_reset_task, "factory_rst", 4096, NULL, 5, NULL);
     return ESP_OK;
+}
+
+/* POST /setup/image — brightness/contrast/saturation/wb_mode only. Applies live via the same
+ * sensor register writes MQTT uses (no camera reinit needed) and updates config_mgr's in-memory
+ * state, but deliberately does NOT call config_mgr_save() or reboot: a flash write must never
+ * happen while the camera's DMA/capture pipeline is running (see config_mgr.h), and unlike
+ * cam_res/jpeg_qual these settings don't require esp_camera_init() to run again. The value is
+ * still included in the next full "Save & Restart" (from here or a resolution/quality change). */
+static esp_err_t setup_image_post_handler(httpd_req_t *req)
+{
+#define IMG_BODY_MAX 128
+    char body[IMG_BODY_MAX + 1];
+    int total = req->content_len;
+    if (total > IMG_BODY_MAX) total = IMG_BODY_MAX;
+
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, body + received, total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) break;
+        received += r;
+    }
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[received] = '\0';
+
+    char brightness_s[8] = {0}, contrast_s[8] = {0}, saturation_s[8] = {0}, wb_mode_s[8] = {0};
+    char *saveptr = NULL;
+    char *pair = strtok_r(body, "&", &saveptr);
+    while (pair) {
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            const char *key = pair;
+            const char *val = eq + 1;
+            if (strcmp(key, "brightness") == 0) strlcpy(brightness_s, val, sizeof(brightness_s));
+            else if (strcmp(key, "contrast")   == 0) strlcpy(contrast_s,   val, sizeof(contrast_s));
+            else if (strcmp(key, "saturation") == 0) strlcpy(saturation_s, val, sizeof(saturation_s));
+            else if (strcmp(key, "wb_mode")    == 0) strlcpy(wb_mode_s,    val, sizeof(wb_mode_s));
+        }
+        pair = strtok_r(NULL, "&", &saveptr);
+    }
+
+    int brightness = atoi(brightness_s);
+    int contrast   = atoi(contrast_s);
+    int saturation = atoi(saturation_s);
+    int wb_mode    = atoi(wb_mode_s);
+    if (brightness < 0 || brightness > 8 || contrast < 0 || contrast > 6 ||
+        saturation < 0 || saturation > 6 || wb_mode < 0 || wb_mode > 4) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "value out of range");
+        return ESP_FAIL;
+    }
+
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera not ready");
+        return ESP_FAIL;
+    }
+    if (s->set_brightness) s->set_brightness(s, brightness);
+    if (s->set_contrast) s->set_contrast(s, contrast);
+    if (s->set_saturation) s->set_saturation(s, saturation);
+    if (s->set_wb_mode) s->set_wb_mode(s, wb_mode);
+    config_mgr_set_brightness((uint8_t)brightness);
+    config_mgr_set_contrast((uint8_t)contrast);
+    config_mgr_set_saturation((uint8_t)saturation);
+    config_mgr_set_wb_mode((uint8_t)wb_mode);
+
+    ESP_LOGI(TAG, "Applied image settings live (not saved): brightness=%d contrast=%d saturation=%d wb_mode=%d",
+             brightness, contrast, saturation, wb_mode);
+
+    static const char *resp_html =
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='2;url=/setup'></head><body>"
+        "<h2>Applied</h2><p>Not saved -- reverts on next restart unless you also "
+        "use Save &amp; Restart. Returning to setup...</p></body></html>";
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, resp_html, strlen(resp_html));
+#undef IMG_BODY_MAX
 }
 
 /* POST /setup — parse form body, update config, schedule restart */
@@ -1125,7 +1210,7 @@ esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.core_id = 1;
     config.stack_size = 8192;
-    config.max_uri_handlers = 12; // 8 original + /snapshot + /stream (plugin compatibility)
+    config.max_uri_handlers = 13; // 8 original + /snapshot + /stream (plugin) + /setup/image
     config.max_open_sockets = 10;
     config.recv_wait_timeout = 5;   // 5s recv timeout to prevent WDT panics on network stall
     config.send_wait_timeout = 5;   // 5s send timeout to prevent WDT panics on network stall
@@ -1211,6 +1296,14 @@ esp_err_t start_http_server(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(s_server, &setup_post_uri);
+
+        httpd_uri_t setup_image_uri = {
+            .uri       = "/setup/image",
+            .method    = HTTP_POST,
+            .handler   = setup_image_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &setup_image_uri);
 
         httpd_uri_t factory_reset_uri = {
             .uri       = "/setup/factory-reset",

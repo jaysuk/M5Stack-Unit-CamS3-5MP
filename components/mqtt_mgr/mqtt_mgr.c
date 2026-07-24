@@ -216,20 +216,28 @@ static void handle_command(const char *topic_ptr, int topic_len, const char *dat
 
     char state_topic[128];
 
+    // config_mgr_set_* here only updates in-memory state (no flash write -- that must never
+    // happen while the camera's DMA/capture pipeline is running, see config_mgr.h) so a value
+    // set over MQTT is remembered and included in the *next* full save (e.g. from /setup),
+    // rather than silently reverting to whatever was last written to NVS on the next reboot.
     if (strstr(topic, "brightness/set")) {
         if (s->set_brightness) s->set_brightness(s, val);
+        config_mgr_set_brightness((uint8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/brightness", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "contrast/set")) {
         if (s->set_contrast) s->set_contrast(s, val);
+        config_mgr_set_contrast((uint8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/contrast", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "saturation/set")) {
         if (s->set_saturation) s->set_saturation(s, val);
+        config_mgr_set_saturation((uint8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/saturation", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "wb_mode/set")) {
         if (s->set_wb_mode) s->set_wb_mode(s, val);
+        config_mgr_set_wb_mode((uint8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/wb_mode", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "ota/set")) {
