@@ -12,9 +12,11 @@ over-the-air firmware updates triggered from an MQTT broker.
 
 ## About this fork
 
-This fork adds compatibility with [DuetWebControl](https://github.com/Duet3D/DuetWebControl)'s
-[Duet Tool Align](https://github.com/jaysuk/duet-tool-align) plugin, which expects both a live
-MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
+**This fork is for use with [RepRapFirmware](https://github.com/Duet3D/RepRapFirmware) toolchangers**,
+via [DuetWebControl](https://github.com/Duet3D/DuetWebControl)'s
+[Duet Tool Align](https://github.com/jaysuk/duet-tool-align) plugin — this board serves as the
+plugin's camera source for automated, in-browser XY tool-offset alignment. The plugin expects both
+a live MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
 
 - `capture_handler` (the existing snapshot logic behind `GET /`) now also sends
   `Cache-Control: no-store, no-cache, must-revalidate` and `Pragma: no-cache`, and is additionally

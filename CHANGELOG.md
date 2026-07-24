@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [v0.3.0] — 2026-07-24
+
+**This release adds compatibility with [RepRapFirmware](https://github.com/Duet3D/RepRapFirmware)
+toolchangers via [DuetWebControl](https://github.com/Duet3D/DuetWebControl)'s
+[Duet Tool Align](https://github.com/jaysuk/duet-tool-align) plugin** — this board can now serve
+as the plugin's camera source for automated, in-browser XY tool-offset alignment. Everything
+upstream (Frigate/Home Assistant/MQTT, OTA, BLE provisioning) is untouched; this is additive.
+
+### Added
+
+- **`GET /snapshot`** — same handler as `GET /`, registered at the path the Duet Tool Align plugin
+  (and `duet-webcam-bridge` before it) expects from a camera bridge, with
+  `Cache-Control: no-store, no-cache, must-revalidate` + `Pragma: no-cache` added.
+- **`GET /stream` on port 80** — the existing async stream handler (already hands off to a
+  per-client worker task rather than blocking, see `mjpeg_client_worker_task`) is now also served
+  on the main port-80 server, alongside the original port-81 stream server. This means Duet Tool
+  Align only needs one bridge URL, no port suffix, for both endpoints.
+- **Brightness/Contrast/Saturation/White Balance on `/setup`** — previously reachable only via
+  MQTT, so tuning image quality for machine-vision use required running a broker.
+- **`POST /setup/image`** — a second, no-reboot submit button for just those four fields. Applies
+  immediately (same live sensor writes MQTT uses); deliberately does not persist to NVS on its own
+  since a flash write must never happen while the camera's DMA/capture pipeline is running (see
+  `config_mgr.h`) — included in the next full "Save & Restart" regardless of which path set it
+  last (`/setup/image`, `/setup`, or MQTT).
+
+### Fixed
+
+- **Unbounded `memcpy` in the broadcaster** — the frame copy into the shared pool buffer had no
+  capacity check. Not hit in practice (measured JPEG sizes are well within the 512KB buffers at
+  every supported resolution), but nothing stopped an unusually large frame from overflowing the
+  buffer and corrupting adjacent PSRAM heap. Now dropped with a log line instead.
+- **Wrong "neutral" defaults** — `apply_camera_settings()` applied
+  `brightness = contrast = saturation = 0` at every boot as if that were neutral. For this sensor
+  (mega_ccm.c register indices, not the generic OV-sensor `-2..2` range), `0` is the
+  *darkest/least-saturated* setting — every boot was quietly running close to the dimmest, flattest
+  image the sensor could produce. Neutral is 4/3/3.
+- **MQTT-set image values reverting** — brightness/contrast/saturation/wb_mode set via MQTT were
+  applied live but never remembered anywhere, so they'd silently revert to whatever was last saved
+  via `/setup` on the next reboot. Now updates `config_mgr`'s in-memory state too (same safe,
+  no-flash-write pattern as `/setup/image` above).
+
+---
+
 ## [v0.2.7] — 2026-06-23
 
 ### Fixed
