@@ -26,10 +26,16 @@ MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
   unchecked `memcpy`, harmless in practice at every resolution this board actually produces, but
   a real overflow risk if a frame ever exceeded the pool's buffer size).
 - **Brightness/contrast/saturation/white-balance are now on `/setup`** (previously MQTT-only, so
-  tuning image quality required running a broker). Applied live and persisted like the other
-  fields. Also corrected `apply_camera_settings()`'s defaults, which were quietly applying the
-  sensor's *darkest*/least-saturated setting at every boot rather than neutral — see the commit
-  for why (mega_ccm.c register indices, not the generic OV-sensor `-2..2` convention).
+  tuning image quality required running a broker). Also corrected `apply_camera_settings()`'s
+  defaults, which were quietly applying the sensor's *darkest*/least-saturated setting at every
+  boot rather than neutral — see the commit for why (mega_ccm.c register indices, not the generic
+  OV-sensor `-2..2` convention).
+- Those four fields have their own **`POST /setup/image`**, wired to a second submit button
+  ("Apply Now") on the same form: applies live with no reboot, since unlike cam_res/jpeg_qual
+  they don't need `esp_camera_init()` to run again -- and deliberately doesn't persist to NVS on
+  its own, since a flash write must never happen while the camera's DMA pipeline is running (see
+  `config_mgr.h`). Included in the next full "Save & Restart" regardless of which form set them
+  last, including from MQTT (previously an MQTT-set value could vanish on the next reboot).
 
 With this, point the plugin's "Camera bridge URL" at `http://<device-ip>` (or `http://<device-id>.local`)
 with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration, BLE
