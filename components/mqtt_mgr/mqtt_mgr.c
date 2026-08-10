@@ -138,7 +138,16 @@ static void send_ha_discovery(void)
     snprintf(state_topic, sizeof(state_topic), "%s/wb_mode", base_topic);
     snprintf(cmd_topic, sizeof(cmd_topic), "%s/wb_mode/set", base_topic);
     publish_discovery("number", "wb_mode", "WB Mode (0=Auto,1=Sun,2=Cloud,3=Office,4=Home)", NULL, NULL, cmd_topic, state_topic, 0, 4);
-    
+
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+    // Exposure compensation (-5 to 5, ov3660.c set_ae_level -- EV bias on top of AEC, not a
+    // manual override). Only meaningful on this board -- mega_ccm.c (PY260) wires set_ae_level
+    // to a no-op, so this entity would do nothing there and isn't worth exposing.
+    snprintf(state_topic, sizeof(state_topic), "%s/exposure", base_topic);
+    snprintf(cmd_topic, sizeof(cmd_topic), "%s/exposure/set", base_topic);
+    publish_discovery("number", "exposure", "Exposure Compensation", NULL, NULL, cmd_topic, state_topic, -5, 5);
+#endif
+
     // PSRAM Free
     snprintf(state_topic, sizeof(state_topic), "%s/psram_free", base_topic);
     publish_discovery("sensor", "psram_free", "PSRAM Free", "data_size", "B", NULL, state_topic, 0, 0);
@@ -222,23 +231,30 @@ static void handle_command(const char *topic_ptr, int topic_len, const char *dat
     // rather than silently reverting to whatever was last written to NVS on the next reboot.
     if (strstr(topic, "brightness/set")) {
         if (s->set_brightness) s->set_brightness(s, val);
-        config_mgr_set_brightness((uint8_t)val);
+        config_mgr_set_brightness((int8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/brightness", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "contrast/set")) {
         if (s->set_contrast) s->set_contrast(s, val);
-        config_mgr_set_contrast((uint8_t)val);
+        config_mgr_set_contrast((int8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/contrast", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "saturation/set")) {
         if (s->set_saturation) s->set_saturation(s, val);
-        config_mgr_set_saturation((uint8_t)val);
+        config_mgr_set_saturation((int8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/saturation", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "wb_mode/set")) {
         if (s->set_wb_mode) s->set_wb_mode(s, val);
         config_mgr_set_wb_mode((uint8_t)val);
         snprintf(state_topic, sizeof(state_topic), "%s/wb_mode", base_topic);
+        esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
+    } else if (strstr(topic, "exposure/set")) {
+        // No-op on PY260 (mega_ccm.c wires set_ae_level to set_dummy) -- harmless to accept the
+        // command on either board rather than special-casing it here too.
+        if (s->set_ae_level) s->set_ae_level(s, val);
+        config_mgr_set_exposure((int8_t)val);
+        snprintf(state_topic, sizeof(state_topic), "%s/exposure", base_topic);
         esp_mqtt_client_publish(client, state_topic, val_str, 0, 0, 0);
     } else if (strstr(topic, "ota/set")) {
         char raw[300];
@@ -485,6 +501,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         esp_mqtt_client_publish(client, topic, "0", 0, 1, 1);
         snprintf(topic, sizeof(topic), "%s/wb_mode", base_topic);
         esp_mqtt_client_publish(client, topic, "0", 0, 1, 1);
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+        snprintf(topic, sizeof(topic), "%s/exposure", base_topic);
+        esp_mqtt_client_publish(client, topic, "0", 0, 1, 1);
+#endif
         // Fix Unknown sensors: publish placeholder values until telemetry loop fires
         snprintf(topic, sizeof(topic), "%s/ota_status", base_topic);
         esp_mqtt_client_publish(client, topic, "idle", 0, 1, 1);

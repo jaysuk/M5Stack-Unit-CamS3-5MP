@@ -22,6 +22,7 @@ static const char *TAG = "config_mgr";
 #define KEY_CONTRAST   "contrast"
 #define KEY_SATURATION "saturation"
 #define KEY_WB_MODE    "wb_mode"
+#define KEY_EXPOSURE   "exposure"
 
 /* Field size limits (including null terminator) */
 #define MQTT_URL_MAX   128
@@ -35,12 +36,39 @@ static const char *TAG = "config_mgr";
 #define DEFAULT_CAM_RES   10
 #define DEFAULT_JPEG_QUAL 12
 
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+/* ov3660.c takes brightness/contrast/saturation directly in its own signed
+ * range -- 0 is neutral, no bias offset. */
+#define DEFAULT_BRIGHTNESS 0
+#define DEFAULT_CONTRAST   0
+#define DEFAULT_SATURATION 0
+#define BRIGHTNESS_MIN     (-3)
+#define BRIGHTNESS_MAX     3
+#define CONTRAST_MIN       (-3)
+#define CONTRAST_MAX       3
+#define SATURATION_MIN     (-4)
+#define SATURATION_MAX     4
+#else
 /* mega_ccm.c register indices -- these are the sensor's neutral/"0" settings,
  * not 0. See config_mgr_get_brightness() etc. in the header. */
 #define DEFAULT_BRIGHTNESS 4
 #define DEFAULT_CONTRAST   3
 #define DEFAULT_SATURATION 3
+#define BRIGHTNESS_MIN     0
+#define BRIGHTNESS_MAX     8
+#define CONTRAST_MIN       0
+#define CONTRAST_MAX       6
+#define SATURATION_MIN     0
+#define SATURATION_MAX     6
+#endif
 #define DEFAULT_WB_MODE    0
+
+/* AE level (EV compensation): same range on both boards. Only ov3660.c implements
+ * set_ae_level -- mega_ccm.c (PY260) wires it to a no-op, so range/default here just needs to be
+ * something harmless to pass through unused on that board. */
+#define DEFAULT_EXPOSURE   0
+#define EXPOSURE_MIN       (-5)
+#define EXPOSURE_MAX       5
 
 /* In-memory config state */
 static char s_mqtt_url[MQTT_URL_MAX];
@@ -52,10 +80,11 @@ static char s_cd_token[CD_TOKEN_MAX];
 static bool    s_mqtt_en;
 static uint8_t s_cam_res;
 static uint8_t s_jpeg_qual;
-static uint8_t s_brightness;
-static uint8_t s_contrast;
-static uint8_t s_saturation;
+static int8_t  s_brightness;
+static int8_t  s_contrast;
+static int8_t  s_saturation;
 static uint8_t s_wb_mode;
+static int8_t  s_exposure;
 
 static bool s_initialized = false;
 
@@ -96,6 +125,18 @@ static void load_u8(nvs_handle_t h, const char *key, uint8_t *dst, uint8_t fallb
     }
 }
 
+/* Load a signed i8 key; on ESP_ERR_NVS_NOT_FOUND use the fallback */
+static void load_i8(nvs_handle_t h, const char *key, int8_t *dst, int8_t fallback)
+{
+    esp_err_t err = nvs_get_i8(h, key, dst);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        *dst = fallback;
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_get_i8(%s) err=0x%x, using fallback", key, err);
+        *dst = fallback;
+    }
+}
+
 esp_err_t config_mgr_init(void)
 {
     nvs_handle_t h;
@@ -130,6 +171,7 @@ esp_err_t config_mgr_init(void)
         s_contrast   = DEFAULT_CONTRAST;
         s_saturation = DEFAULT_SATURATION;
         s_wb_mode    = DEFAULT_WB_MODE;
+        s_exposure   = DEFAULT_EXPOSURE;
         s_initialized = true;
         return ESP_OK;
     }
@@ -139,15 +181,20 @@ esp_err_t config_mgr_init(void)
     load_u8(nh, KEY_MQTT_EN,   &mqtt_en_u8,   1);
     load_u8(nh, KEY_CAM_RES,   &s_cam_res,    DEFAULT_CAM_RES);
     load_u8(nh, KEY_JPEG_QUAL, &s_jpeg_qual,  DEFAULT_JPEG_QUAL);
-    load_u8(nh, KEY_BRIGHTNESS, &s_brightness, DEFAULT_BRIGHTNESS);
-    load_u8(nh, KEY_CONTRAST,   &s_contrast,   DEFAULT_CONTRAST);
-    load_u8(nh, KEY_SATURATION, &s_saturation, DEFAULT_SATURATION);
+    load_i8(nh, KEY_BRIGHTNESS, &s_brightness, DEFAULT_BRIGHTNESS);
+    load_i8(nh, KEY_CONTRAST,   &s_contrast,   DEFAULT_CONTRAST);
+    load_i8(nh, KEY_SATURATION, &s_saturation, DEFAULT_SATURATION);
     load_u8(nh, KEY_WB_MODE,    &s_wb_mode,    DEFAULT_WB_MODE);
+    load_i8(nh, KEY_EXPOSURE,   &s_exposure,   DEFAULT_EXPOSURE);
     s_mqtt_en = (mqtt_en_u8 != 0);
-    if (s_brightness > 8) s_brightness = DEFAULT_BRIGHTNESS;
-    if (s_contrast   > 6) s_contrast   = DEFAULT_CONTRAST;
-    if (s_saturation > 6) s_saturation = DEFAULT_SATURATION;
+    /* Also catches a value persisted under the other board's range (e.g. NVS
+     * carried over from a PY260 build after switching to OV3660) -- reset to
+     * neutral rather than pass a stale out-of-range value to the sensor. */
+    if (s_brightness < BRIGHTNESS_MIN || s_brightness > BRIGHTNESS_MAX) s_brightness = DEFAULT_BRIGHTNESS;
+    if (s_contrast   < CONTRAST_MIN   || s_contrast   > CONTRAST_MAX)   s_contrast   = DEFAULT_CONTRAST;
+    if (s_saturation < SATURATION_MIN || s_saturation > SATURATION_MAX) s_saturation = DEFAULT_SATURATION;
     if (s_wb_mode    > 4) s_wb_mode    = DEFAULT_WB_MODE;
+    if (s_exposure   < EXPOSURE_MIN   || s_exposure   > EXPOSURE_MAX)   s_exposure   = DEFAULT_EXPOSURE;
 
     /* Validate cam_res against PY260-supported framesizes.
      * Reject values that mega_ccm.c does not handle — previously stored
@@ -179,10 +226,11 @@ uint8_t     config_mgr_get_cam_resolution(void){ return s_cam_res; }
 uint8_t     config_mgr_get_jpeg_quality(void)  { return s_jpeg_qual; }
 const char *config_mgr_get_ota_token(void)     { return s_ota_token; }
 const char *config_mgr_get_coredump_token(void) { return s_cd_token; }
-uint8_t     config_mgr_get_brightness(void)    { return s_brightness; }
-uint8_t     config_mgr_get_contrast(void)      { return s_contrast; }
-uint8_t     config_mgr_get_saturation(void)    { return s_saturation; }
+int8_t      config_mgr_get_brightness(void)    { return s_brightness; }
+int8_t      config_mgr_get_contrast(void)      { return s_contrast; }
+int8_t      config_mgr_get_saturation(void)    { return s_saturation; }
 uint8_t     config_mgr_get_wb_mode(void)       { return s_wb_mode; }
+int8_t      config_mgr_get_exposure(void)      { return s_exposure; }
 
 /* --- Setters (update in-memory only) --- */
 
@@ -209,25 +257,42 @@ void config_mgr_set_jpeg_quality(uint8_t v)
 }
 void config_mgr_set_ota_token(const char *v)     { strlcpy(s_ota_token, v, sizeof(s_ota_token)); }
 void config_mgr_set_coredump_token(const char *v) { strlcpy(s_cd_token,  v, sizeof(s_cd_token)); }
-void config_mgr_set_brightness(uint8_t v)
+void config_mgr_set_brightness(int8_t v)
 {
-    if (v > 8) { ESP_LOGW(TAG, "set_brightness: %u out of range (0-8) — ignoring", v); return; }
+    if (v < BRIGHTNESS_MIN || v > BRIGHTNESS_MAX) {
+        ESP_LOGW(TAG, "set_brightness: %d out of range (%d..%d) — ignoring", v, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
+        return;
+    }
     s_brightness = v;
 }
-void config_mgr_set_contrast(uint8_t v)
+void config_mgr_set_contrast(int8_t v)
 {
-    if (v > 6) { ESP_LOGW(TAG, "set_contrast: %u out of range (0-6) — ignoring", v); return; }
+    if (v < CONTRAST_MIN || v > CONTRAST_MAX) {
+        ESP_LOGW(TAG, "set_contrast: %d out of range (%d..%d) — ignoring", v, CONTRAST_MIN, CONTRAST_MAX);
+        return;
+    }
     s_contrast = v;
 }
-void config_mgr_set_saturation(uint8_t v)
+void config_mgr_set_saturation(int8_t v)
 {
-    if (v > 6) { ESP_LOGW(TAG, "set_saturation: %u out of range (0-6) — ignoring", v); return; }
+    if (v < SATURATION_MIN || v > SATURATION_MAX) {
+        ESP_LOGW(TAG, "set_saturation: %d out of range (%d..%d) — ignoring", v, SATURATION_MIN, SATURATION_MAX);
+        return;
+    }
     s_saturation = v;
 }
 void config_mgr_set_wb_mode(uint8_t v)
 {
     if (v > 4) { ESP_LOGW(TAG, "set_wb_mode: %u out of range (0-4) — ignoring", v); return; }
     s_wb_mode = v;
+}
+void config_mgr_set_exposure(int8_t v)
+{
+    if (v < EXPOSURE_MIN || v > EXPOSURE_MAX) {
+        ESP_LOGW(TAG, "set_exposure: %d out of range (%d..%d) — ignoring", v, EXPOSURE_MIN, EXPOSURE_MAX);
+        return;
+    }
+    s_exposure = v;
 }
 
 /* --- Persist to NVS --- */
@@ -257,10 +322,11 @@ esp_err_t config_mgr_save(void)
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_MQTT_EN,   s_mqtt_en ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_CAM_RES,   s_cam_res);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_JPEG_QUAL, s_jpeg_qual);
-    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_BRIGHTNESS, s_brightness);
-    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_CONTRAST,   s_contrast);
-    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_SATURATION, s_saturation);
+    if (err == ESP_OK) err = nvs_set_i8(h,  KEY_BRIGHTNESS, s_brightness);
+    if (err == ESP_OK) err = nvs_set_i8(h,  KEY_CONTRAST,   s_contrast);
+    if (err == ESP_OK) err = nvs_set_i8(h,  KEY_SATURATION, s_saturation);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_WB_MODE,    s_wb_mode);
+    if (err == ESP_OK) err = nvs_set_i8(h,  KEY_EXPOSURE,   s_exposure);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set failed err=0x%x — aborting save without commit", err);

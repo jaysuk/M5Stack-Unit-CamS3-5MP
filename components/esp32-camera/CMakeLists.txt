@@ -1,4 +1,4 @@
-# ESP32-S3 only, MEGA_CCM (PY260) only, JPEG only
+# ESP32-S3 only, MEGA_CCM (PY260) + OV3660, JPEG only
 # Forked from M5Stack UnitCamS3-UserDemo (unitcams3-5mp branch)
 
 # Select SCCB implementation based on ESP-IDF major version:
@@ -19,6 +19,7 @@ set(COMPONENT_SRCS
     ${SCCB_SRC}
     driver/sensor.c
     sensors/mega_ccm.c
+    sensors/ov3660.c
     target/esp32s3/ll_cam.c
 )
 

@@ -1,5 +1,19 @@
 menu "UnitCamS3 Firmware Configuration"
 
+choice UNITCAMS3_CAMERA_BOARD
+    prompt "Camera board / sensor"
+    default UNITCAMS3_BOARD_PY260
+    help
+        Selects the pin map and sensor-specific tuning (XCLK, max frame size) this
+        build targets. These differ per physical board and are not auto-detected.
+
+    config UNITCAMS3_BOARD_PY260
+        bool "M5Stack Unit CamS3-5MP (PY260 sensor)"
+
+    config UNITCAMS3_BOARD_OV3660
+        bool "Generic ESP32-S3-CAM, OV3660 sensor (e.g. Goouuu-Cam pinout)"
+endchoice
+
 config UNITCAMS3_MQTT_BROKER_URL
     string "MQTT broker URL"
     default "mqtt://your-broker-ip"

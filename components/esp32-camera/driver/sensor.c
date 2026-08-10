@@ -3,6 +3,7 @@
 
 const camera_sensor_info_t camera_sensor[CAMERA_MODEL_MAX] = {
     {CAMERA_MEGA_CCM, "MEGA_CCM", MEGA_CCM_SCCB_ADDR, MEGA_CCM_PID, FRAMESIZE_5MP, true},
+    {CAMERA_OV3660, "OV3660", OV3660_SCCB_ADDR, OV3660_PID, FRAMESIZE_QXGA, true},
 };
 
 const resolution_info_t resolution[FRAMESIZE_INVALID] = {

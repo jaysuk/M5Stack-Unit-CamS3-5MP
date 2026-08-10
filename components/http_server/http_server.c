@@ -819,12 +819,21 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "<label>JPEG Quality (1=best, 63=lowest)</label>"
         "<input type='text' name='jpeg_qual' value='%u'>"
 
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+        "<label>Brightness (-3 to 3, 0=default)</label>"
+        "<input type='text' name='brightness' value='%d'>"
+        "<label>Contrast (-3 to 3, 0=default)</label>"
+        "<input type='text' name='contrast' value='%d'>"
+        "<label>Saturation (-4 to 4, 0=default)</label>"
+        "<input type='text' name='saturation' value='%d'>"
+#else
         "<label>Brightness (0-8, 4=default)</label>"
-        "<input type='text' name='brightness' value='%u'>"
+        "<input type='text' name='brightness' value='%d'>"
         "<label>Contrast (0-6, 3=default)</label>"
-        "<input type='text' name='contrast' value='%u'>"
+        "<input type='text' name='contrast' value='%d'>"
         "<label>Saturation (0-6, 3=default)</label>"
-        "<input type='text' name='saturation' value='%u'>"
+        "<input type='text' name='saturation' value='%d'>"
+#endif
         "<label>White Balance</label>"
         "<select name='wb_mode'>",
         config_mgr_get_jpeg_quality(),
@@ -832,7 +841,13 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         config_mgr_get_contrast(),
         config_mgr_get_saturation());
 
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+    /* ov3660.c's set_wb_mode: 1=Sunny 2=Cloudy 3=Office 4=Home -- index 2/3
+     * swapped vs mega_ccm.c below. */
+    static const char *wb_names[] = {"Auto", "Sunny", "Cloudy", "Office", "Home"};
+#else
     static const char *wb_names[] = {"Auto", "Sunny", "Office", "Cloudy", "Home"};
+#endif
     uint8_t cur_wb = config_mgr_get_wb_mode();
     for (int i = 0; i < 5; i++) {
         pos += snprintf(buf + pos, sizeof(buf) - pos,
@@ -840,13 +855,25 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
             i, (cur_wb == i) ? " selected" : "", wb_names[i]);
     }
 
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "</select>");
+
+#if CONFIG_UNITCAMS3_BOARD_OV3660
     pos += snprintf(buf + pos, sizeof(buf) - pos,
-        "</select>"
+        "<label>Exposure comp. (-5 to 5, 0=default)</label>"
+        "<input type='text' name='exposure' value='%d'>"
+        "<p style='font-size:0.8em;color:#6b7280;margin:-4px 0 8px'>"
+        "EV bias on top of auto-exposure -- lower it if a bright glare/hotspot in frame is "
+        "fooling auto-exposure into underexposing everything else. Auto-exposure stays on; "
+        "this just shifts its target.</p>",
+        config_mgr_get_exposure());
+#endif
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
         "<p style='font-size:0.85em;color:#6b7280;margin-bottom:4px'>"
         "\"Apply Now\" takes effect immediately with no reboot, but is lost on the next restart "
         "unless you also use \"Save &amp; Restart\" at some point (which saves everything on this "
         "page, image settings included).</p>"
-        "<input type='submit' formaction='/setup/image' value='Apply Now (Brightness/Contrast/Saturation/WB only)'>"
+        "<input type='submit' formaction='/setup/image' value='Apply Now (Brightness/Contrast/Saturation/WB/Exposure only)'>"
         " <input type='submit' value='Save &amp; Restart'>"
         "<script>function tog(){var e=document.getElementById('mqtt_en').checked;"
         "var d=document.getElementById('mqtt_fields');"
@@ -912,10 +939,10 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /setup/image — brightness/contrast/saturation/wb_mode only. Applies live via the same
- * sensor register writes MQTT uses (no camera reinit needed) and updates config_mgr's in-memory
- * state, but deliberately does NOT call config_mgr_save() or reboot: a flash write must never
- * happen while the camera's DMA/capture pipeline is running (see config_mgr.h), and unlike
+/* POST /setup/image — brightness/contrast/saturation/wb_mode/exposure only. Applies live via the
+ * same sensor register writes MQTT uses (no camera reinit needed) and updates config_mgr's
+ * in-memory state, but deliberately does NOT call config_mgr_save() or reboot: a flash write must
+ * never happen while the camera's DMA/capture pipeline is running (see config_mgr.h), and unlike
  * cam_res/jpeg_qual these settings don't require esp_camera_init() to run again. The value is
  * still included in the next full "Save & Restart" (from here or a resolution/quality change). */
 static esp_err_t setup_image_post_handler(httpd_req_t *req)
@@ -938,7 +965,7 @@ static esp_err_t setup_image_post_handler(httpd_req_t *req)
     }
     body[received] = '\0';
 
-    char brightness_s[8] = {0}, contrast_s[8] = {0}, saturation_s[8] = {0}, wb_mode_s[8] = {0};
+    char brightness_s[8] = {0}, contrast_s[8] = {0}, saturation_s[8] = {0}, wb_mode_s[8] = {0}, exposure_s[8] = {0};
     char *saveptr = NULL;
     char *pair = strtok_r(body, "&", &saveptr);
     while (pair) {
@@ -951,6 +978,7 @@ static esp_err_t setup_image_post_handler(httpd_req_t *req)
             else if (strcmp(key, "contrast")   == 0) strlcpy(contrast_s,   val, sizeof(contrast_s));
             else if (strcmp(key, "saturation") == 0) strlcpy(saturation_s, val, sizeof(saturation_s));
             else if (strcmp(key, "wb_mode")    == 0) strlcpy(wb_mode_s,    val, sizeof(wb_mode_s));
+            else if (strcmp(key, "exposure")   == 0) strlcpy(exposure_s,   val, sizeof(exposure_s));
         }
         pair = strtok_r(NULL, "&", &saveptr);
     }
@@ -959,8 +987,17 @@ static esp_err_t setup_image_post_handler(httpd_req_t *req)
     int contrast   = atoi(contrast_s);
     int saturation = atoi(saturation_s);
     int wb_mode    = atoi(wb_mode_s);
+    // Absent from the form on the non-OV3660 board (and defaults to "0" = neutral if the OV3660
+    // form field was simply left untouched), so atoi("") = 0 is always in-range here regardless.
+    int exposure   = atoi(exposure_s);
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+    if (brightness < -3 || brightness > 3 || contrast < -3 || contrast > 3 ||
+        saturation < -4 || saturation > 4 || wb_mode < 0 || wb_mode > 4 ||
+        exposure < -5 || exposure > 5) {
+#else
     if (brightness < 0 || brightness > 8 || contrast < 0 || contrast > 6 ||
         saturation < 0 || saturation > 6 || wb_mode < 0 || wb_mode > 4) {
+#endif
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "value out of range");
         return ESP_FAIL;
     }
@@ -974,13 +1011,15 @@ static esp_err_t setup_image_post_handler(httpd_req_t *req)
     if (s->set_contrast) s->set_contrast(s, contrast);
     if (s->set_saturation) s->set_saturation(s, saturation);
     if (s->set_wb_mode) s->set_wb_mode(s, wb_mode);
-    config_mgr_set_brightness((uint8_t)brightness);
-    config_mgr_set_contrast((uint8_t)contrast);
-    config_mgr_set_saturation((uint8_t)saturation);
+    if (s->set_ae_level) s->set_ae_level(s, exposure);
+    config_mgr_set_brightness((int8_t)brightness);
+    config_mgr_set_contrast((int8_t)contrast);
+    config_mgr_set_saturation((int8_t)saturation);
     config_mgr_set_wb_mode((uint8_t)wb_mode);
+    config_mgr_set_exposure((int8_t)exposure);
 
-    ESP_LOGI(TAG, "Applied image settings live (not saved): brightness=%d contrast=%d saturation=%d wb_mode=%d",
-             brightness, contrast, saturation, wb_mode);
+    ESP_LOGI(TAG, "Applied image settings live (not saved): brightness=%d contrast=%d saturation=%d wb_mode=%d exposure=%d",
+             brightness, contrast, saturation, wb_mode, exposure);
 
     static const char *resp_html =
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -1030,6 +1069,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     char contrast_s[8]   = {0};
     char saturation_s[8] = {0};
     char wb_mode_s[8]    = {0};
+    char exposure_s[8]   = {0};
 
     char *saveptr = NULL;
     char *pair = strtok_r(body, "&", &saveptr);
@@ -1055,6 +1095,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
             else if (strcmp(key, "contrast")   == 0) strlcpy(contrast_s,   decoded, sizeof(contrast_s));
             else if (strcmp(key, "saturation") == 0) strlcpy(saturation_s, decoded, sizeof(saturation_s));
             else if (strcmp(key, "wb_mode")    == 0) strlcpy(wb_mode_s,    decoded, sizeof(wb_mode_s));
+            else if (strcmp(key, "exposure")   == 0) strlcpy(exposure_s,   decoded, sizeof(exposure_s));
         }
         pair = strtok_r(NULL, "&", &saveptr);
     }
@@ -1074,7 +1115,24 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid cam_res");
         return ESP_FAIL;
     }
-    // mega_ccm.c register indices (see config_mgr.h) -- not the generic OV-sensor -2..2 range.
+    // Range depends on the active sensor -- see config_mgr.h.
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+    int brightness = atoi(brightness_s);
+    if (brightness < -3 || brightness > 3) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "brightness must be -3 to 3");
+        return ESP_FAIL;
+    }
+    int contrast = atoi(contrast_s);
+    if (contrast < -3 || contrast > 3) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "contrast must be -3 to 3");
+        return ESP_FAIL;
+    }
+    int saturation = atoi(saturation_s);
+    if (saturation < -4 || saturation > 4) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "saturation must be -4 to 4");
+        return ESP_FAIL;
+    }
+#else
     int brightness = atoi(brightness_s);
     if (brightness < 0 || brightness > 8) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "brightness must be 0-8");
@@ -1090,9 +1148,16 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "saturation must be 0-6");
         return ESP_FAIL;
     }
+#endif
     int wb_mode = atoi(wb_mode_s);
     if (wb_mode < 0 || wb_mode > 4) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "wb_mode must be 0-4");
+        return ESP_FAIL;
+    }
+    // Absent from the form on the non-OV3660 board, so atoi("") = 0 (neutral) is always in-range.
+    int exposure = atoi(exposure_s);
+    if (exposure < -5 || exposure > 5) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "exposure must be -5 to 5");
         return ESP_FAIL;
     }
 
@@ -1106,12 +1171,13 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     config_mgr_set_mqtt_enabled(mqtt_en);
     config_mgr_set_cam_resolution((uint8_t)cam_res);
     config_mgr_set_jpeg_quality((uint8_t)jpeg_qual);
-    config_mgr_set_brightness((uint8_t)brightness);
-    config_mgr_set_contrast((uint8_t)contrast);
-    config_mgr_set_saturation((uint8_t)saturation);
+    config_mgr_set_brightness((int8_t)brightness);
+    config_mgr_set_contrast((int8_t)contrast);
+    config_mgr_set_saturation((int8_t)saturation);
     config_mgr_set_wb_mode((uint8_t)wb_mode);
+    config_mgr_set_exposure((int8_t)exposure);
 
-    // Apply brightness/contrast/saturation/wb_mode immediately (no camera reinit needed --
+    // Apply brightness/contrast/saturation/wb_mode/exposure immediately (no camera reinit needed --
     // same live sensor register writes mqtt_mgr already does for these). cam_res/jpeg_qual
     // still need the reboot below since they require re-running esp_camera_init().
     sensor_t *s = esp_camera_sensor_get();
@@ -1120,6 +1186,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         if (s->set_contrast) s->set_contrast(s, contrast);
         if (s->set_saturation) s->set_saturation(s, saturation);
         if (s->set_wb_mode) s->set_wb_mode(s, wb_mode);
+        if (s->set_ae_level) s->set_ae_level(s, exposure);
     }
 
     ESP_LOGI(TAG, "Setup POST: url=%s user=%s dev=%s mqtt_en=%d res=%d qual=%d",

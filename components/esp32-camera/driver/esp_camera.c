@@ -1,7 +1,7 @@
 // Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 // Licensed under the Apache License, Version 2.0
 //
-// Stripped to MEGA_CCM (PY260) only, JPEG-only, XCLK locked to 10MHz.
+// Stripped to MEGA_CCM (PY260) + OV3660, JPEG-only.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,12 +19,10 @@
 #include "cam_hal.h"
 #include "esp_camera.h"
 #include "mega_ccm.h"
+#include "ov3660.h"
 
 #include "esp_log.h"
 static const char *TAG = "camera";
-
-/* XCLK is fixed at 10MHz for the PY260 */
-#define PY260_XCLK_FREQ_HZ  10000000
 
 typedef struct {
     sensor_t sensor;
@@ -46,6 +44,7 @@ typedef struct {
 
 static const sensor_func_t g_sensors[] = {
     {mega_ccm_detect, mega_ccm_init},
+    {ov3660_detect, ov3660_init},
 };
 
 static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out_camera_model)
@@ -117,7 +116,7 @@ static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out
 
     ESP_LOGI(TAG, "Detected camera at address=0x%02x", slv_addr);
     s_state->sensor.slv_addr = slv_addr;
-    s_state->sensor.xclk_freq_hz = PY260_XCLK_FREQ_HZ;
+    s_state->sensor.xclk_freq_hz = config->xclk_freq_hz;
 
     sensor_id_t *id = &s_state->sensor.id;
     for (size_t i = 0; i < sizeof(g_sensors) / sizeof(sensor_func_t); i++) {

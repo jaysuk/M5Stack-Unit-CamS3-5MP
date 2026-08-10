@@ -16,16 +16,19 @@ extern "C" {
 
 typedef enum {
     MEGA_CCM_PID = 0x039E,
+    OV3660_PID = 0x3660,
 } camera_pid_t;
 
 typedef enum {
     CAMERA_MEGA_CCM,
+    CAMERA_OV3660,
     CAMERA_MODEL_MAX,
     CAMERA_NONE,
 } camera_model_t;
 
 typedef enum {
     MEGA_CCM_SCCB_ADDR = 0x1F,// 0x3E >> 1
+    OV3660_SCCB_ADDR   = 0x3C,// 0x78 >> 1
 } camera_sccb_addr_t;
 
 /* JPEG is the only supported pixel format for this firmware.

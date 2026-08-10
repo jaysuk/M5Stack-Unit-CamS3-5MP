@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
@@ -23,6 +24,45 @@
 #include "log_buf.h"
 #include "nvs_flash.h"
 
+#if CONFIG_UNITCAMS3_BOARD_OV3660
+// ========================================
+// Generic ESP32-S3-CAM (OV3660) Pin Map
+// Matches the Goouuu-Cam pinout: SIOD=4 SIOC=5 VSYNC=6 HREF=7 XCLK=15 PCLK=13
+// Y9..Y2 = 16,17,18,12,10,8,9,11 — confirmed against board silkscreen/schematic,
+// NOT hardware-validated on this firmware (untested ISR/VSYNC timing, see CLAUDE.md).
+// ========================================
+// 20MHz divides the LCD_CAM 160MHz source clock evenly (160/20=8) and is the
+// commonly used OV3660 XCLK; NOT yet validated for VSYNC-front-porch timing on
+// this firmware's ISR (see CLAUDE.md "Hard Hardware Constraints" — that section
+// documents PY260-specific numbers only).
+#define CAM_XCLK_FREQ_HZ 20000000
+
+// Resolution Configuration: FRAMESIZE_VGA, FRAMESIZE_SVGA, FRAMESIZE_XVGA, FRAMESIZE_UXGA
+#define CAM_FRAME_SIZE   FRAMESIZE_VGA
+
+static const char *TAG = "main";
+
+#define CAM_PIN_PWDN    -1 // Not connected
+#define CAM_PIN_RESET   -1 // Not connected
+#define CAM_PIN_XCLK    15
+#define CAM_PIN_SIOD    4  // SDA
+#define CAM_PIN_SIOC    5  // SCL
+
+#define CAM_PIN_D7      16 // Y9
+#define CAM_PIN_D6      17 // Y8
+#define CAM_PIN_D5      18 // Y7
+#define CAM_PIN_D4      12 // Y6
+#define CAM_PIN_D3      10 // Y5
+#define CAM_PIN_D2      8  // Y4
+#define CAM_PIN_D1      9  // Y3
+#define CAM_PIN_D0      11 // Y2
+#define CAM_PIN_VSYNC   6
+#define CAM_PIN_HREF    7
+#define CAM_PIN_PCLK    13
+#else
+// ========================================
+// Phase 1: UnitCamS3 Pin Map
+// ========================================
 // 10MHz: hard ceiling — PY260 front porch too short at 16/20MHz regardless of ISR weight
 #define CAM_XCLK_FREQ_HZ 10000000
 
@@ -31,9 +71,6 @@
 
 static const char *TAG = "main";
 
-// ========================================
-// Phase 1: UnitCamS3 Pin Map
-// ========================================
 #define CAM_PIN_PWDN    -1 // Tied to GND
 #define CAM_PIN_RESET   21
 #define CAM_PIN_XCLK    11
@@ -51,6 +88,7 @@ static const char *TAG = "main";
 #define CAM_PIN_VSYNC   42
 #define CAM_PIN_HREF    18
 #define CAM_PIN_PCLK    12
+#endif
 
 // ========================================
 // Camera Configuration
@@ -104,14 +142,19 @@ static void apply_camera_settings(void)
 
     ESP_LOGI(TAG, "Applying camera settings...");
 
-    // Brightness/contrast/saturation/wb_mode are mega_ccm.c register indices (0-8/0-6/0-6/0-4,
-    // NOT the generic OV-sensor -2..2 range), configurable at runtime via /setup -- see config_mgr.h.
+    // config_mgr's brightness/contrast/saturation/wb_mode range and neutral point track
+    // whichever sensor CONFIG_UNITCAMS3_BOARD_* selects -- see config_mgr.h/config_mgr.c.
     if (s->set_brightness) s->set_brightness(s, config_mgr_get_brightness());
     if (s->set_contrast) s->set_contrast(s, config_mgr_get_contrast());
     if (s->set_saturation) s->set_saturation(s, config_mgr_get_saturation());
     if (s->set_special_effect) s->set_special_effect(s, CAM_SPECIAL_EFFECT);
     if (s->set_wb_mode) s->set_wb_mode(s, config_mgr_get_wb_mode());
     if (s->set_exposure_ctrl) s->set_exposure_ctrl(s, CAM_AEC);
+    // AE level: EV-style bias on top of AEC (still auto, just targets brighter/darker), not a
+    // manual exposure override. Useful when a bright glare/hotspot in frame fools AEC's metering
+    // into underexposing everything else. Only ov3660.c implements this -- PY260/mega_ccm wires
+    // set_ae_level to a no-op, so this is inert (and harmless) on that board.
+    if (s->set_ae_level) s->set_ae_level(s, config_mgr_get_exposure());
     // set_whitebal, set_awb_gain, set_gain_ctrl are not implemented by PY260 (wired to set_dummy)
 
     ESP_LOGI(TAG, "Camera settings applied");

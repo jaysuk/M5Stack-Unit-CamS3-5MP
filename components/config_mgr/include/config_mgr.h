@@ -25,13 +25,20 @@ uint8_t     config_mgr_get_jpeg_quality(void);
 const char *config_mgr_get_ota_token(void);
 const char *config_mgr_get_coredump_token(void);
 
-/* PY260/mega_ccm sensor register indices -- NOT the generic OV-sensor -2..2
- * convention. See components/esp32-camera/sensors/mega_ccm.c set_brightness/
- * set_contrast/set_saturation/set_wb_mode for the authoritative mapping. */
-uint8_t     config_mgr_get_brightness(void);   /* 0-8, 4 = neutral */
-uint8_t     config_mgr_get_contrast(void);     /* 0-6, 3 = neutral */
-uint8_t     config_mgr_get_saturation(void);   /* 0-6, 3 = neutral */
-uint8_t     config_mgr_get_wb_mode(void);      /* 0=Auto 1=Sunny 2=Office 3=Cloudy 4=Home */
+/* Range/neutral point depends on the active sensor (CONFIG_UNITCAMS3_BOARD_*) --
+ * see the CONFIG_UNITCAMS3_BOARD_OV3660 #if in config_mgr.c for both scales.
+ * PY260/mega_ccm uses its own register-index convention (0-8/0-6/0-6, biased
+ * so N/2 = neutral); OV3660 uses the signed range its driver expects natively
+ * (-3..3/-3..3/-4..4, 0 = neutral). Callers must not assume a fixed range. */
+int8_t      config_mgr_get_brightness(void);
+int8_t      config_mgr_get_contrast(void);
+int8_t      config_mgr_get_saturation(void);
+uint8_t     config_mgr_get_wb_mode(void);      /* 0=Auto, 1-4 = per-sensor preset order (labels differ, see http_server.c wb_names) */
+
+/* AE level / exposure compensation: -5..5, 0=neutral, same range on both boards. Only
+ * ov3660.c implements set_ae_level (a genuine EV-style bias on top of AEC, not a manual
+ * exposure override) -- mega_ccm.c (PY260) wires it to a no-op, so this has no effect there. */
+int8_t      config_mgr_get_exposure(void);
 
 /* Setters (update in-memory state only — call config_mgr_save() to persist) */
 void config_mgr_set_mqtt_url(const char *v);
@@ -43,10 +50,11 @@ void config_mgr_set_cam_resolution(uint8_t v);
 void config_mgr_set_jpeg_quality(uint8_t v);
 void config_mgr_set_ota_token(const char *v);
 void config_mgr_set_coredump_token(const char *v);
-void config_mgr_set_brightness(uint8_t v);
-void config_mgr_set_contrast(uint8_t v);
-void config_mgr_set_saturation(uint8_t v);
+void config_mgr_set_brightness(int8_t v);
+void config_mgr_set_contrast(int8_t v);
+void config_mgr_set_saturation(int8_t v);
 void config_mgr_set_wb_mode(uint8_t v);
+void config_mgr_set_exposure(int8_t v);
 
 /**
  * @brief Write all fields to NVS.
