@@ -145,15 +145,52 @@ static esp_err_t sha256_buffer(const uint8_t *buf, size_t len, uint8_t digest[32
 // frame_pool (3×512KB = 1.5MB) is already allocated before OTA runs, leaving ~6MB free.
 #define OTA_MAX_FW_SIZE (4 * 1024 * 1024)  // 4 MB ceiling
 
-static esp_err_t run_ota_from_url(const char *url, const char *sha256_hex)
+// Shared by both the URL-pull path (this file) and http_server.c's direct-upload path: once a
+// complete firmware image is sitting in a PSRAM buffer, validating and flashing it is identical
+// regardless of how it got there. See ota_mgr.h for the full contract.
+esp_err_t ota_mgr_flash_from_buffer(uint8_t *fw_buf, int fw_len, const char *sha256_hex)
 {
     esp_err_t err = ESP_FAIL;
-    uint8_t *fw_buf  = NULL;  // PSRAM: full firmware image
     uint8_t *wr_buf  = NULL;  // internal SRAM: 4KB staging for esp_ota_write
-    esp_http_client_handle_t client = NULL;
     esp_ota_handle_t ota_handle = 0;
     bool ota_begun   = false;
     bool wifi_stopped = false;
+
+    if (!fw_buf || fw_len <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Validate firmware magic byte before touching the OTA partition.
+    if (fw_buf[0] != ESP_IMAGE_MAGIC) {
+        ESP_LOGE(TAG, "Bad firmware magic 0x%02x (expected 0xE9) — not a valid .bin", fw_buf[0]);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Firmware magic byte OK (0xE9)");
+
+    // SHA-256 verification (if a hash was provided)
+    if (sha256_hex && sha256_hex[0] != '\0') {
+        ESP_LOGI(TAG, "Verifying SHA-256 against: %s", sha256_hex);
+        uint8_t digest[32];
+        if (sha256_buffer(fw_buf, fw_len, digest) != ESP_OK) {
+            ESP_LOGE(TAG, "SHA-256 computation failed — aborting");
+            return ESP_FAIL;
+        }
+        // Convert digest to hex for comparison
+        char actual_hex[65];
+        for (int i = 0; i < 32; i++) {
+            snprintf(actual_hex + 2*i, 3, "%02x", digest[i]);
+        }
+        actual_hex[64] = '\0';
+        if (strncasecmp(actual_hex, sha256_hex, 64) != 0) {
+            ESP_LOGE(TAG, "SHA-256 MISMATCH — rejecting firmware");
+            ESP_LOGE(TAG, "  Expected: %s", sha256_hex);
+            ESP_LOGE(TAG, "  Actual:   %s", actual_hex);
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "SHA-256 verified OK");
+    } else {
+        ESP_LOGW(TAG, "No SHA-256 provided — skipping hash check");
+    }
 
     // Internal SRAM staging buffer — must NOT be PSRAM: during esp_ota_write()
     // the OPI PSRAM cache is disabled and any PSRAM access would crash.
@@ -162,6 +199,84 @@ static esp_err_t run_ota_from_url(const char *url, const char *sha256_hex)
         ESP_LOGE(TAG, "Failed to alloc %d byte write buffer (internal SRAM)", OTA_BUF_SIZE);
         return ESP_ERR_NO_MEM;
     }
+
+    // Stop Wi-Fi BEFORE the first flash write. esp_ota_begin/write disable the OPI PSRAM cache.
+    // If any Wi-Fi or lwIP ISR fires during the cache-disable window and touches PSRAM, it causes
+    // ExcCause=7 → double exception. Stopping Wi-Fi removes all active ISRs. (Callers with a live
+    // camera pipeline must also have already stopped that — see this function's doc comment.)
+    ESP_LOGI(TAG, "Stopping Wi-Fi before flash write (cache-disable safety)...");
+    esp_wifi_stop();
+    wifi_stopped = true;
+    vTaskDelay(pdMS_TO_TICKS(100)); // let the driver fully quiesce
+
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) {
+        ESP_LOGE(TAG, "No OTA update partition found");
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "Target: '%s' at 0x%" PRIx32, part->label, part->address);
+
+    err = esp_ota_begin(part, fw_len, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    ota_begun = true;
+
+    // Copy PSRAM → internal SRAM (safe: no flash write yet), then write to flash.
+    // During esp_ota_write() the PSRAM cache is disabled; wr_buf (internal SRAM)
+    // is the only memory accessed — safe by design.
+    int written = 0;
+    while (written < fw_len) {
+        esp_task_wdt_reset();
+        int chunk = fw_len - written;
+        if (chunk > OTA_BUF_SIZE) chunk = OTA_BUF_SIZE;
+        memcpy(wr_buf, fw_buf + written, chunk);        // PSRAM → SRAM (no flash op)
+        err = esp_ota_write(ota_handle, wr_buf, chunk); // SRAM → flash (cache off)
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
+            goto cleanup;
+        }
+        written += chunk;
+        if (written % (200 * 1024) < OTA_BUF_SIZE) {
+            ESP_LOGI(TAG, "Flash: %d / %d bytes", written, fw_len);
+        }
+    }
+
+    err = esp_ota_end(ota_handle);
+    ota_begun = false;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+
+    err = esp_ota_set_boot_partition(part);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+
+    ESP_LOGI(TAG, "OTA flash complete — %d bytes written to '%s'", written, part->label);
+
+cleanup:
+    if (ota_begun)    esp_ota_abort(ota_handle);
+    if (wr_buf)       heap_caps_free(wr_buf);
+    if (wifi_stopped && err != ESP_OK) {
+        // Flash failed after Wi-Fi was stopped — reboot cleanly rather than
+        // trying to resume normal boot with a half-initialized network stack.
+        ESP_LOGE(TAG, "OTA failed after Wi-Fi stop — rebooting");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+    return err;
+}
+
+static esp_err_t run_ota_from_url(const char *url, const char *sha256_hex)
+{
+    esp_err_t err = ESP_FAIL;
+    uint8_t *fw_buf  = NULL;  // PSRAM: full firmware image
+    esp_http_client_handle_t client = NULL;
 
     esp_http_client_config_t http_cfg = {
         .url        = url,
@@ -231,119 +346,18 @@ static esp_err_t run_ota_from_url(const char *url, const char *sha256_hex)
     }
     ESP_LOGI(TAG, "Download complete: %d bytes", fw_len);
 
-    // Validate firmware magic byte before touching the OTA partition.
-    if (fw_buf[0] != ESP_IMAGE_MAGIC) {
-        ESP_LOGE(TAG, "Bad firmware magic 0x%02x (expected 0xE9) — not a valid .bin",
-                 fw_buf[0]);
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "Firmware magic byte OK (0xE9)");
-
-    // SHA-256 verification (if a hash was provided in the MQTT payload)
-    if (sha256_hex && sha256_hex[0] != '\0') {
-        ESP_LOGI(TAG, "Verifying SHA-256 against: %s", sha256_hex);
-        uint8_t digest[32];
-        if (sha256_buffer(fw_buf, fw_len, digest) != ESP_OK) {
-            ESP_LOGE(TAG, "SHA-256 computation failed — aborting");
-            err = ESP_FAIL;
-            goto cleanup;
-        }
-        // Convert digest to hex for comparison
-        char actual_hex[65];
-        for (int i = 0; i < 32; i++) {
-            snprintf(actual_hex + 2*i, 3, "%02x", digest[i]);
-        }
-        actual_hex[64] = '\0';
-        if (strncasecmp(actual_hex, sha256_hex, 64) != 0) {
-            ESP_LOGE(TAG, "SHA-256 MISMATCH — rejecting firmware");
-            ESP_LOGE(TAG, "  Expected: %s", sha256_hex);
-            ESP_LOGE(TAG, "  Actual:   %s", actual_hex);
-            err = ESP_FAIL;
-            goto cleanup;
-        }
-        ESP_LOGI(TAG, "SHA-256 verified OK");
-    } else {
-        ESP_LOGW(TAG, "No SHA-256 provided — skipping hash check");
-    }
-
-    // Phase 2: Close HTTP and stop Wi-Fi BEFORE the first flash write.
-    // esp_ota_begin/write disable the OPI PSRAM cache. If any Wi-Fi or lwIP
-    // ISR fires during the cache-disable window and touches PSRAM, it causes
-    // ExcCause=7 → double exception. Stopping Wi-Fi removes all active ISRs.
+    // Close the HTTP client before handing off to ota_mgr_flash_from_buffer(), which stops Wi-Fi
+    // itself right before the first flash write (see its doc comment for why that ordering matters).
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     client = NULL;
 
-    ESP_LOGI(TAG, "Stopping Wi-Fi before flash write (cache-disable safety)...");
-    esp_wifi_stop();
-    wifi_stopped = true;
-    vTaskDelay(pdMS_TO_TICKS(100)); // let the driver fully quiesce
-
-    // Phase 3: Flash.
-    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
-    if (!part) {
-        ESP_LOGE(TAG, "No OTA update partition found");
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "Target: '%s' at 0x%" PRIx32, part->label, part->address);
-
-    err = esp_ota_begin(part, fw_len, &ota_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        goto cleanup;
-    }
-    ota_begun = true;
-
-    // Copy PSRAM → internal SRAM (safe: no flash write yet), then write to flash.
-    // During esp_ota_write() the PSRAM cache is disabled; wr_buf (internal SRAM)
-    // is the only memory accessed — safe by design.
-    int written = 0;
-    while (written < fw_len) {
-        esp_task_wdt_reset();
-        int chunk = fw_len - written;
-        if (chunk > OTA_BUF_SIZE) chunk = OTA_BUF_SIZE;
-        memcpy(wr_buf, fw_buf + written, chunk);        // PSRAM → SRAM (no flash op)
-        err = esp_ota_write(ota_handle, wr_buf, chunk); // SRAM → flash (cache off)
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
-            goto cleanup;
-        }
-        written += chunk;
-        if (written % (200 * 1024) < OTA_BUF_SIZE) {
-            ESP_LOGI(TAG, "Flash: %d / %d bytes", written, fw_len);
-        }
-    }
-
-    err = esp_ota_end(ota_handle);
-    ota_begun = false;
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
-        goto cleanup;
-    }
-
-    err = esp_ota_set_boot_partition(part);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
-        goto cleanup;
-    }
-
-    ESP_LOGI(TAG, "OTA flash complete — %d bytes written to '%s'", written, part->label);
+    // Phase 2+3: validate and flash. Shared with http_server.c's direct-upload path.
+    err = ota_mgr_flash_from_buffer(fw_buf, fw_len, sha256_hex);
 
 cleanup:
-    if (ota_begun)    esp_ota_abort(ota_handle);
-    if (client)       esp_http_client_cleanup(client);
-    if (fw_buf)       heap_caps_free(fw_buf);
-    if (wr_buf)       heap_caps_free(wr_buf);
-    if (wifi_stopped && err != ESP_OK) {
-        // Flash failed after Wi-Fi was stopped — reboot cleanly rather than
-        // trying to resume normal boot with a half-initialized network stack.
-        // RTC RAM is already cleared so no OTA boot loop will occur.
-        ESP_LOGE(TAG, "OTA failed after Wi-Fi stop — rebooting");
-        vTaskDelay(pdMS_TO_TICKS(200));
-        esp_restart();
-    }
+    if (client)  esp_http_client_cleanup(client);
+    if (fw_buf)  heap_caps_free(fw_buf);
     return err;
 }
 

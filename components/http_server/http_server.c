@@ -19,6 +19,7 @@
 #include "config_mgr.h"
 #include "log_buf.h"
 #include "recovery_mgr.h"
+#include "ota_mgr.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "freertos/semphr.h"
@@ -748,7 +749,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
     const esp_app_desc_t *app = esp_app_get_description();
 
-    char buf[4096];
+    char buf[6144]; // was 4096 -- grown for the Firmware Update section below
     int pos = 0;
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
@@ -891,6 +892,31 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "</script>"
         "</form>"
         "<hr>"
+        "<h3>Firmware Update</h3>"
+        "<p style='font-size:0.85em;color:#6b7280;margin-top:-8px'>"
+        "Upload a unitcams3_firmware.bin built for this board. The device writes it to the "
+        "inactive OTA partition and reboots into it; if the new firmware fails to come up "
+        "cleanly, the bootloader automatically rolls back to this version.</p>"
+        "<input type='file' id='fw_file' accept='.bin'>"
+        "<button type='button' id='fw_btn' onclick='fwUpload()' "
+        "style='margin-top:10px;padding:8px 16px;background:#2563eb;color:#fff;border:none;"
+        "border-radius:4px;cursor:pointer;font-size:1em'>Upload &amp; Flash</button>"
+        "<p id='fw_status' style='font-size:0.9em;color:#6b7280'></p>"
+        "<script>function fwUpload(){"
+        "var f=document.getElementById('fw_file').files[0];"
+        "var st=document.getElementById('fw_status');"
+        "if(!f){st.textContent='Choose a .bin file first.';return;}"
+        "if(!confirm('Flash '+f.name+' ('+f.size+' bytes) and reboot the camera?'))return;"
+        "document.getElementById('fw_btn').disabled=true;"
+        "st.textContent='Uploading '+f.size+' bytes...';"
+        "fetch('/setup/ota',{method:'POST',body:f}).then(function(r){"
+        "if(!r.ok){return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});}"
+        "st.textContent='Uploaded. Flashing and rebooting -- reload /setup in about 20s.';"
+        "}).catch(function(e){"
+        "st.textContent='Upload failed: '+e.message;"
+        "document.getElementById('fw_btn').disabled=false;"
+        "});}</script>"
+        "<hr>"
         "<details><summary style='cursor:pointer;color:#dc2626;font-weight:bold'>Danger Zone</summary>"
         "<form method='POST' action='/setup/factory-reset' style='margin-top:12px'>"
         "<p style='color:#dc2626;font-size:0.9em'>Erases all settings and Wi-Fi credentials. "
@@ -944,6 +970,117 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, resp_html, strlen(resp_html));
     xTaskCreate(factory_reset_task, "factory_rst", 4096, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+// ========================================
+// Firmware update — direct upload from /setup
+// ========================================
+
+// Current image is ~1.3MB (see build output); this leaves headroom for growth while still
+// bounding the PSRAM allocation to something that always fits alongside the frame pool.
+#define OTA_UPLOAD_MAX_SIZE (2 * 1024 * 1024)
+
+typedef struct {
+    uint8_t *fw_buf;
+    int fw_len;
+} ota_upload_ctx_t;
+
+// One-shot task: stop streams/camera (flash writes must never race camera DMA -- see
+// ota_mgr_flash_from_buffer()'s doc comment), flash, then reboot. Runs after the HTTP response
+// for the upload has already been sent, mirroring setup_restart_task()'s "respond, then act" shape.
+static void ota_upload_finish_task(void *arg)
+{
+    ota_upload_ctx_t *ctx = (ota_upload_ctx_t *)arg;
+    vTaskDelay(pdMS_TO_TICKS(500)); // let the HTTP response flush first
+
+    ESP_LOGW(TAG, "OTA upload: stopping camera/streams before flashing...");
+    http_server_prepare_ota(); // stops broadcaster/clients, drains and deinits the camera
+
+    esp_task_wdt_add(NULL);
+    esp_err_t err = ota_mgr_flash_from_buffer(ctx->fw_buf, ctx->fw_len, NULL);
+    esp_task_wdt_delete(NULL);
+
+    heap_caps_free(ctx->fw_buf);
+    free(ctx);
+
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "OTA upload: flash OK, rebooting into new firmware");
+        recovery_mgr_signal_planned_reboot();
+        esp_restart();
+        /* NOT REACHED */
+    }
+
+    // Flash failed before Wi-Fi was stopped (ota_mgr_flash_from_buffer() reboots on its own for a
+    // failure AFTER that point -- see its doc comment). Camera/streams are already torn down
+    // above, though, so this device instance won't resume streaming until the next reboot; that's
+    // an acceptable, rare failure mode (bad upload) rather than one worth building a live
+    // camera-restart path for.
+    ESP_LOGE(TAG, "OTA upload: flash failed (%s) — rebooting to restore normal operation", esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+}
+
+/* POST /setup/ota — raw firmware binary body (the page's JS uses fetch() with a File as the
+ * body, not a <form>, since multipart file-upload parsing has no simple ESP-IDF httpd helper). */
+static esp_err_t setup_ota_upload_handler(httpd_req_t *req)
+{
+    int total = req->content_len;
+    if (total <= 0 || total > OTA_UPLOAD_MAX_SIZE) {
+        ESP_LOGE(TAG, "OTA upload: missing or implausible size %d", total);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or oversized upload");
+        return ESP_FAIL;
+    }
+
+    uint8_t *fw_buf = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!fw_buf) {
+        ESP_LOGE(TAG, "OTA upload: failed to alloc %d bytes PSRAM", total);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, (char *)(fw_buf + received), total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) {
+            ESP_LOGE(TAG, "OTA upload: recv failed (%d) at %d/%d bytes", r, received, total);
+            heap_caps_free(fw_buf);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Upload interrupted");
+            return ESP_FAIL;
+        }
+        received += r;
+    }
+    ESP_LOGI(TAG, "OTA upload: received %d bytes", received);
+
+    // Fail fast on an obviously-wrong file (wrong board's image, some other .bin, HTML from a
+    // redirected download, etc.) before ever promising the browser a reboot is happening.
+    if (fw_buf[0] != 0xE9) {
+        ESP_LOGE(TAG, "OTA upload: bad magic byte 0x%02x — not a valid firmware .bin", fw_buf[0]);
+        heap_caps_free(fw_buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Not a valid firmware .bin (bad image header)");
+        return ESP_FAIL;
+    }
+
+    ota_upload_ctx_t *ctx = malloc(sizeof(ota_upload_ctx_t));
+    if (!ctx) {
+        heap_caps_free(fw_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    ctx->fw_buf = fw_buf;
+    ctx->fw_len = received;
+
+    static const char *resp_html =
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>"
+        "<h2>Upload received. Flashing and rebooting...</h2>"
+        "<p>Do not power off the camera.</p></body></html>";
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, resp_html, strlen(resp_html));
+
+    /* Deferred: stop streams/camera, flash, reboot -- after the HTTP response is fully sent */
+    xTaskCreate(ota_upload_finish_task, "ota_upload", 4096, ctx, 5, NULL);
+
     return ESP_OK;
 }
 
@@ -1285,7 +1422,7 @@ esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.core_id = 1;
     config.stack_size = 8192;
-    config.max_uri_handlers = 13; // 8 original + /snapshot + /stream (plugin) + /setup/image
+    config.max_uri_handlers = 14; // 8 original + /snapshot + /stream (plugin) + /setup/image + /setup/ota
     config.max_open_sockets = 10;
     config.recv_wait_timeout = 5;   // 5s recv timeout to prevent WDT panics on network stall
     config.send_wait_timeout = 5;   // 5s send timeout to prevent WDT panics on network stall
@@ -1387,6 +1524,14 @@ esp_err_t start_http_server(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(s_server, &factory_reset_uri);
+
+        httpd_uri_t setup_ota_uri = {
+            .uri       = "/setup/ota",
+            .method    = HTTP_POST,
+            .handler   = setup_ota_upload_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &setup_ota_uri);
 
         return ESP_OK;
     }
