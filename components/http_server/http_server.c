@@ -749,7 +749,12 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
     const esp_app_desc_t *app = esp_app_get_description();
 
-    char buf[6144]; // was 4096 -- grown for the Firmware Update section below
+    // static, not stack: this handler's task stack is only 8192 bytes (see start_webserver()),
+    // and buf here plus the url_esc/user_esc/pass_esc/dev_esc locals below plus the httpd dispatch
+    // call chain overflowed it once buf grew past 4096 for the Firmware Update section -- crashing
+    // this task (and, downstream, the device) on every /setup request. Not reentrant-unsafe: this
+    // handler runs synchronously on a single httpd worker, never concurrently with itself.
+    static char buf[6144];
     int pos = 0;
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
