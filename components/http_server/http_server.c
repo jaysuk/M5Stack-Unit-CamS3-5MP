@@ -456,6 +456,14 @@ static void mjpeg_client_worker_task(void *arg)
     struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
+    // Each frame goes out as three separate chunk writes below (small multipart header, the JPEG
+    // payload, then a 2-byte "\r\n" trailer). Without TCP_NODELAY, Nagle's algorithm holds those small
+    // writes back waiting to coalesce with more outbound data or for the peer's ACK, which stalls on
+    // essentially every frame -- this is what was turning ~18fps of valid captures (see /stats
+    // vsync_count) into well under 1fps actually reaching the browser.
+    int nodelay = 1;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
     // Set headers (part of the async response)
     httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=" MJPEG_BOUNDARY);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
