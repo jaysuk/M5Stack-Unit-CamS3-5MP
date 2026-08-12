@@ -31,11 +31,16 @@
 // Y9..Y2 = 16,17,18,12,10,8,9,11 — confirmed against board silkscreen/schematic,
 // NOT hardware-validated on this firmware (untested ISR/VSYNC timing, see CLAUDE.md).
 // ========================================
-// 20MHz divides the LCD_CAM 160MHz source clock evenly (160/20=8) and is the
-// commonly used OV3660 XCLK; NOT yet validated for VSYNC-front-porch timing on
-// this firmware's ISR (see CLAUDE.md "Hard Hardware Constraints" — that section
-// documents PY260-specific numbers only).
-#define CAM_XCLK_FREQ_HZ 20000000
+// Was 20MHz (divides the 160MHz LCD_CAM source evenly, 160/20=8, and is the commonly-used
+// OV3660 XCLK) -- doesn't corrupt frames on this firmware's ISR (no_soi/no_eoi stayed at 0), but
+// at 20MHz this sensor free-runs at ~18-20fps, roughly double PY260's validated 10MHz/~9.4fps
+// ceiling. That's roughly double the VSYNC/GDMA-EOF interrupt rate hammering Core 1, which also
+// hosts the MJPEG broadcaster/worker tasks and the Wi-Fi driver -- confirmed via /stats: capture
+// stayed clean at 20MHz, but delivered stream fps collapsed to a fraction of a frame per second
+// and didn't meaningfully recover even at QVGA (i.e. it wasn't payload-size-bound). Dropping to
+// PY260's validated 10MHz halves that interrupt rate so the delivery-side tasks actually get Core
+// 1 time, trading a lower native capture rate for one that's actually deliverable end to end.
+#define CAM_XCLK_FREQ_HZ 10000000
 
 // Resolution Configuration: FRAMESIZE_VGA, FRAMESIZE_SVGA, FRAMESIZE_XVGA, FRAMESIZE_UXGA
 #define CAM_FRAME_SIZE   FRAMESIZE_VGA
