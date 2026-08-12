@@ -1,0 +1,5 @@
+# Layered on top of sdkconfig.defaults via SDKCONFIG_DEFAULTS to select the
+# OV3660 board variant instead of the default PY260 (M5Stack Unit CamS3-5MP).
+# Used locally with: idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ov3660" build
+# (or just flip the choice in menuconfig / sed the generated sdkconfig directly).
+CONFIG_UNITCAMS3_BOARD_OV3660=y
