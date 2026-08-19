@@ -40,6 +40,14 @@ uint8_t     config_mgr_get_wb_mode(void);      /* 0=Auto, 1-4 = per-sensor prese
  * exposure override) -- mega_ccm.c (PY260) wires it to a no-op, so this has no effect there. */
 int8_t      config_mgr_get_exposure(void);
 
+/* NeoPixel ring: "enabled" is the /setup master switch (whether the hardware is even wired
+ * up) -- gates neopixel_mgr_init() touching the RMT peripheral/GPIO at all, and is what the
+ * duet-tool-align plugin checks before showing any light control. "on"/"brightness" are the
+ * live state, white only (see neopixel_mgr.h). */
+bool        config_mgr_is_neopixel_enabled(void);
+bool        config_mgr_get_neopixel_on(void);
+uint8_t     config_mgr_get_neopixel_brightness(void);
+
 /* Setters (update in-memory state only — call config_mgr_save() to persist) */
 void config_mgr_set_mqtt_url(const char *v);
 void config_mgr_set_mqtt_user(const char *v);
@@ -55,6 +63,9 @@ void config_mgr_set_contrast(int8_t v);
 void config_mgr_set_saturation(int8_t v);
 void config_mgr_set_wb_mode(uint8_t v);
 void config_mgr_set_exposure(int8_t v);
+void config_mgr_set_neopixel_enabled(bool v);
+void config_mgr_set_neopixel_on(bool v);
+void config_mgr_set_neopixel_brightness(uint8_t v);
 
 /**
  * @brief Write all fields to NVS.

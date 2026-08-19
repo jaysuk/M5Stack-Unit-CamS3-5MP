@@ -45,6 +45,25 @@ config UNITCAMS3_COREDUMP_TOKEN
         Add 'Authorization: Bearer <this>' header to your request.
         An empty token disables authentication.
 
+config UNITCAMS3_NEOPIXEL_PIN
+    int "NeoPixel (WS2812) ring data pin (GPIO number)"
+    default 2
+    help
+        GPIO driving the WS2812/NeoPixel ring's DIN line. Default GPIO2 is unused by either
+        board's camera pin map (see main/main.c's CAM_PIN_* definitions) and isn't a strapping
+        pin, but this hasn't been hardware-validated -- confirm against your specific board's
+        silkscreen/schematic before wiring, and change this (or via idf.py menuconfig) if GPIO2
+        isn't broken out on yours or is already used for something else. Only takes effect if
+        "Enable NeoPixel ring" is also ticked on /setup -- boards without the ring wired up
+        never touch this pin or the RMT peripheral at all.
+
+config UNITCAMS3_NEOPIXEL_COUNT
+    int "NeoPixel ring LED count"
+    default 16
+    range 1 300
+    help
+        Number of WS2812 LEDs in the ring/strip connected to the data pin above.
+
 config UNITCAMS3_FPS_TEST_MODE
     bool "FPS test mode (disables Wi-Fi, HTTP, MQTT — camera throughput measurement only)"
     default n

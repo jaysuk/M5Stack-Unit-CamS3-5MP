@@ -20,6 +20,7 @@
 #include "log_buf.h"
 #include "recovery_mgr.h"
 #include "ota_mgr.h"
+#include "neopixel_mgr.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "freertos/semphr.h"
@@ -619,6 +620,89 @@ static esp_err_t logs_handler(httpd_req_t *req)
     return err;
 }
 
+// Handler for "/api/neopixel" (GET) — capability + current state as JSON. duet-tool-align (or
+// any other consumer) polls this before showing any light control at all: "enabled" is the
+// /setup master switch, "active" additionally confirms the driver actually came up (e.g. still
+// false if enabled but led_strip_new_rmt_device() failed).
+static esp_err_t neopixel_get_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"enabled\":%s,\"active\":%s,\"on\":%s,\"brightness\":%u}",
+        config_mgr_is_neopixel_enabled() ? "true" : "false",
+        neopixel_mgr_is_active() ? "true" : "false",
+        config_mgr_get_neopixel_on() ? "true" : "false",
+        (unsigned)config_mgr_get_neopixel_brightness());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, buf, len);
+}
+
+// Handler for "/api/neopixel" (POST) — form body on=0|1&brightness=0-255 (either may be
+// omitted to leave that field unchanged). Applies live and white-only (see neopixel_mgr.h);
+// deliberately does NOT persist to NVS, same reasoning as /setup/image's "Apply Now" -- a flash
+// write must never race the camera's DMA pipeline. Persisting goes through the normal
+// Save & Restart path on /setup, which already defers to after esp_camera_deinit().
+static esp_err_t neopixel_post_handler(httpd_req_t *req)
+{
+#define NEOPIXEL_BODY_MAX 64
+    char body[NEOPIXEL_BODY_MAX + 1];
+    int total = req->content_len;
+    if (total > NEOPIXEL_BODY_MAX) total = NEOPIXEL_BODY_MAX;
+
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, body + received, total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) break;
+        received += r;
+    }
+    body[received > 0 ? received : 0] = '\0';
+
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (!neopixel_mgr_is_active()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "NeoPixel ring not enabled/active");
+        return ESP_FAIL;
+    }
+
+    bool on = config_mgr_get_neopixel_on();
+    int brightness = config_mgr_get_neopixel_brightness();
+
+    char on_s[8] = {0}, br_s[8] = {0};
+    char *saveptr = NULL;
+    char *pair = strtok_r(body, "&", &saveptr);
+    while (pair) {
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            const char *key = pair;
+            const char *val = eq + 1;
+            if (strcmp(key, "on") == 0) strlcpy(on_s, val, sizeof(on_s));
+            else if (strcmp(key, "brightness") == 0) strlcpy(br_s, val, sizeof(br_s));
+        }
+        pair = strtok_r(NULL, "&", &saveptr);
+    }
+    if (on_s[0]) on = (atoi(on_s) != 0);
+    if (br_s[0]) {
+        int v = atoi(br_s);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        brightness = v;
+    }
+
+    esp_err_t err = neopixel_mgr_set_state(on, (uint8_t)brightness);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to apply NeoPixel state");
+        return ESP_FAIL;
+    }
+
+    char resp[96];
+    int len = snprintf(resp, sizeof(resp), "{\"on\":%s,\"brightness\":%u}", on ? "true" : "false", (unsigned)brightness);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, len);
+#undef NEOPIXEL_BODY_MAX
+}
+
 // Handler for "/api/coredump" — stream raw coredump partition
 static esp_err_t coredump_handler(httpd_req_t *req)
 {
@@ -883,6 +967,16 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 #endif
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "<h3>NeoPixel Ring</h3>"
+        "<label><input type='checkbox' name='neopixel_en' value='1' id='neopixel_en'%s> "
+        "Enable NeoPixel ring (WS2812, wired to GPIO%d)</label>"
+        "<p style='font-size:0.8em;color:#6b7280;margin:-4px 0 8px'>"
+        "Only tick this if a WS2812/NeoPixel ring is physically connected to the pin above -- "
+        "see the README for wiring. Takes effect after Save &amp; Restart.</p>",
+        config_mgr_is_neopixel_enabled() ? " checked" : "",
+        CONFIG_UNITCAMS3_NEOPIXEL_PIN);
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
         "<p style='font-size:0.85em;color:#6b7280;margin-bottom:4px'>"
         "\"Apply Now\" takes effect immediately with no reboot, but is lost on the next restart "
         "unless you also use \"Save &amp; Restart\" at some point (which saves everything on this "
@@ -895,7 +989,36 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "d.querySelectorAll('input').forEach(function(i){i.disabled=!e;});}"
         "document.getElementById('mqtt_en').addEventListener('change',tog);tog();"
         "</script>"
-        "</form>"
+        "</form>");
+
+    if (neopixel_mgr_is_active()) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "<hr>"
+            "<h3>NeoPixel Live Control</h3>"
+            "<label><input type='checkbox' id='np_on'%s> On (white)</label>"
+            "<label style='display:block;margin-top:8px'>Brightness"
+            "<input type='range' id='np_br' min='0' max='255' value='%u' style='width:100%%'></label>"
+            "<button type='button' id='np_btn' onclick='npApply()' "
+            "style='margin-top:10px;padding:8px 16px;background:#2563eb;color:#fff;border:none;"
+            "border-radius:4px;cursor:pointer;font-size:1em'>Apply</button>"
+            "<p id='np_status' style='font-size:0.9em;color:#6b7280'></p>"
+            "<script>function npApply(){"
+            "var on=document.getElementById('np_on').checked?1:0;"
+            "var br=document.getElementById('np_br').value;"
+            "var st=document.getElementById('np_status');"
+            "st.textContent='Applying...';"
+            "fetch('/api/neopixel',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+            "body:'on='+on+'&brightness='+br}).then(function(r){"
+            "if(!r.ok){return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});}"
+            "return r.json();"
+            "}).then(function(j){st.textContent='Applied: '+(j.on?'on':'off')+', brightness '+j.brightness+'.';"
+            "}).catch(function(e){st.textContent='Failed: '+e.message;});}"
+            "</script>",
+            config_mgr_get_neopixel_on() ? " checked" : "",
+            config_mgr_get_neopixel_brightness());
+    }
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
         "<hr>"
         "<h3>Firmware Update</h3>"
         "<p style='font-size:0.85em;color:#6b7280;margin-top:-8px'>"
@@ -1213,6 +1336,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     char ota_token[64]  = {0};
     char cd_token[64]   = {0};
     bool mqtt_en        = false;
+    bool neopixel_en    = false;
     char cam_res_s[8]   = {0};
     char jpeg_qual_s[8] = {0};
     char brightness_s[8] = {0};
@@ -1239,6 +1363,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
             else if (strcmp(key, "ota_token") == 0) strlcpy(ota_token,   decoded, sizeof(ota_token));
             else if (strcmp(key, "cd_token")  == 0) strlcpy(cd_token,    decoded, sizeof(cd_token));
             else if (strcmp(key, "mqtt_en")   == 0) mqtt_en = (decoded[0] == '1');
+            else if (strcmp(key, "neopixel_en") == 0) neopixel_en = (decoded[0] == '1');
             else if (strcmp(key, "cam_res")   == 0) strlcpy(cam_res_s,   decoded, sizeof(cam_res_s));
             else if (strcmp(key, "jpeg_qual") == 0) strlcpy(jpeg_qual_s, decoded, sizeof(jpeg_qual_s));
             else if (strcmp(key, "brightness") == 0) strlcpy(brightness_s, decoded, sizeof(brightness_s));
@@ -1319,6 +1444,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     if (ota_token[0]) config_mgr_set_ota_token(ota_token);
     if (cd_token[0])  config_mgr_set_coredump_token(cd_token);
     config_mgr_set_mqtt_enabled(mqtt_en);
+    config_mgr_set_neopixel_enabled(neopixel_en);
     config_mgr_set_cam_resolution((uint8_t)cam_res);
     config_mgr_set_jpeg_quality((uint8_t)jpeg_qual);
     config_mgr_set_brightness((int8_t)brightness);
@@ -1427,7 +1553,7 @@ esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.core_id = 1;
     config.stack_size = 8192;
-    config.max_uri_handlers = 14; // 8 original + /snapshot + /stream (plugin) + /setup/image + /setup/ota
+    config.max_uri_handlers = 16; // 8 original + /snapshot + /stream (plugin) + /setup/image + /setup/ota + /api/neopixel (GET+POST)
     config.max_open_sockets = 10;
     config.recv_wait_timeout = 5;   // 5s recv timeout to prevent WDT panics on network stall
     config.send_wait_timeout = 5;   // 5s send timeout to prevent WDT panics on network stall
@@ -1497,6 +1623,22 @@ esp_err_t start_http_server(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(s_server, &logs_uri);
+
+        httpd_uri_t neopixel_get_uri = {
+            .uri       = "/api/neopixel",
+            .method    = HTTP_GET,
+            .handler   = neopixel_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &neopixel_get_uri);
+
+        httpd_uri_t neopixel_post_uri = {
+            .uri       = "/api/neopixel",
+            .method    = HTTP_POST,
+            .handler   = neopixel_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &neopixel_post_uri);
 
         httpd_uri_t setup_get_uri = {
             .uri       = "/setup",

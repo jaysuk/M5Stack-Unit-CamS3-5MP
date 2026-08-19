@@ -43,6 +43,36 @@ With this, point the plugin's "Camera bridge URL" at `http://<device-ip>` (or `h
 with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration, BLE
 provisioning) are untouched — see below.
 
+### NeoPixel ring (optional work light)
+
+The board can drive an addressable **WS2812 ("NeoPixel") ring** as a white work light — handy
+for lighting the tool/nozzle during alignment. It's off by default and completely inert (no GPIO
+or peripheral touched at all) until you enable it, so boards without a ring wired up are
+unaffected.
+
+**Wiring** — connect the ring's `DIN` to **GPIO2**, plus 5V and GND. GPIO2 is unused by both
+supported camera boards' pin maps (see `CAM_PIN_*` in `main/main.c`) and isn't an ESP32-S3
+strapping pin, but always check your board's actual silkscreen/schematic before wiring — if GPIO2
+is unavailable on your unit, override the pin via `idf.py menuconfig` → *UnitCamS3 Firmware
+Configuration* → *NeoPixel (WS2812) ring data pin*, or edit `UNITCAMS3_NEOPIXEL_PIN` in
+`main/Kconfig.projbuild`.
+The default LED count is 16 (matching the ring this was built for); change
+`UNITCAMS3_NEOPIXEL_COUNT` the same way if yours differs.
+
+A 16-LED WS2812 ring can draw up to ~1A at full white brightness — power it from the board's 5V
+rail (not a GPIO), and keep that in mind if you're running off USB power alone.
+
+**Enabling it** — open `/setup`, tick **"Enable NeoPixel ring"** under the new *NeoPixel Ring*
+section, and submit (**Save & Restart**). After the reboot, `/setup` shows a live **On/Off** +
+**brightness** control that applies immediately (no further reboot needed). The ring is white-only
+— there's no color picker, since the ask is a work light, not an RGB effect.
+
+This also lights up the **Duet Tool Align** plugin: once enabled, the plugin's UI shows the same
+on/off + brightness control next to the camera view, calling the device's `GET`/`POST
+/api/neopixel` endpoints. If the ring isn't enabled on `/setup`, the plugin detects this (a 400
+from `POST` / `"enabled":false` from `GET`) and simply doesn't show the control — no configuration
+needed on the plugin side.
+
 Everything else in this README describes the upstream project as-is.
 
 ---
@@ -84,6 +114,8 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
   automatic Watchdog recovery (30s timeout)
 - **Home Assistant auto-discovery** — sensor, number, and button entities on connect
 - **Camera image controls** via MQTT — brightness, contrast, saturation, white balance
+- **Optional NeoPixel (WS2812) ring work light** — on/off + brightness, white only; see
+  [NeoPixel ring](#neopixel-ring-optional-work-light) above
 - **URL-based OTA** — publish firmware URL to MQTT; optional token auth and SHA-256 integrity verification before flashing
 - **Recovery manager** — NVS boot-loop detection, 2-minute health timer, OTA rollback
 - **Core dump to flash** — download crash dumps via `GET /api/coredump`

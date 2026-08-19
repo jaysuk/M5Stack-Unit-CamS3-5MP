@@ -20,6 +20,7 @@
 // Phase 8 Headers
 #include "ota_mgr.h"
 #include "config_mgr.h"
+#include "neopixel_mgr.h"
 #include "mdns.h"
 #include "log_buf.h"
 #include "nvs_flash.h"
@@ -311,6 +312,9 @@ void app_main(void)
 
     ESP_LOGI(TAG, "--- Loading Config ---");
     config_mgr_init();
+
+    ESP_LOGI(TAG, "--- NeoPixel Ring ---");
+    neopixel_mgr_init(); // no-op unless enabled in config -- see neopixel_mgr.h
 
     ESP_LOGI(TAG, "--- Starting mDNS ---");
     mdns_init();

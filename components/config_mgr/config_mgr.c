@@ -23,6 +23,9 @@ static const char *TAG = "config_mgr";
 #define KEY_SATURATION "saturation"
 #define KEY_WB_MODE    "wb_mode"
 #define KEY_EXPOSURE   "exposure"
+#define KEY_NEOPIXEL_EN "neopixel_en"
+#define KEY_NEOPIXEL_ON "neopixel_on"
+#define KEY_NEOPIXEL_BR "neopixel_br"
 
 /* Field size limits (including null terminator) */
 #define MQTT_URL_MAX   128
@@ -70,6 +73,13 @@ static const char *TAG = "config_mgr";
 #define EXPOSURE_MIN       (-5)
 #define EXPOSURE_MAX       5
 
+/* NeoPixel ring: off and dim by default -- enabling it in /setup shouldn't itself pull a
+ * surprise ~1A (16 WS2812 LEDs can each draw ~60mA at full white) or light up the ring until
+ * the user explicitly turns it on. */
+#define DEFAULT_NEOPIXEL_EN false
+#define DEFAULT_NEOPIXEL_ON false
+#define DEFAULT_NEOPIXEL_BRIGHTNESS 40
+
 /* In-memory config state */
 static char s_mqtt_url[MQTT_URL_MAX];
 static char s_mqtt_user[MQTT_USER_MAX];
@@ -85,6 +95,9 @@ static int8_t  s_contrast;
 static int8_t  s_saturation;
 static uint8_t s_wb_mode;
 static int8_t  s_exposure;
+static bool    s_neopixel_en;
+static bool    s_neopixel_on;
+static uint8_t s_neopixel_brightness;
 
 static bool s_initialized = false;
 
@@ -172,6 +185,9 @@ esp_err_t config_mgr_init(void)
         s_saturation = DEFAULT_SATURATION;
         s_wb_mode    = DEFAULT_WB_MODE;
         s_exposure   = DEFAULT_EXPOSURE;
+        s_neopixel_en = DEFAULT_NEOPIXEL_EN;
+        s_neopixel_on = DEFAULT_NEOPIXEL_ON;
+        s_neopixel_brightness = DEFAULT_NEOPIXEL_BRIGHTNESS;
         s_initialized = true;
         return ESP_OK;
     }
@@ -186,6 +202,13 @@ esp_err_t config_mgr_init(void)
     load_i8(nh, KEY_SATURATION, &s_saturation, DEFAULT_SATURATION);
     load_u8(nh, KEY_WB_MODE,    &s_wb_mode,    DEFAULT_WB_MODE);
     load_i8(nh, KEY_EXPOSURE,   &s_exposure,   DEFAULT_EXPOSURE);
+    uint8_t neopixel_en_u8 = DEFAULT_NEOPIXEL_EN ? 1 : 0;
+    uint8_t neopixel_on_u8 = DEFAULT_NEOPIXEL_ON ? 1 : 0;
+    load_u8(nh, KEY_NEOPIXEL_EN, &neopixel_en_u8, DEFAULT_NEOPIXEL_EN ? 1 : 0);
+    load_u8(nh, KEY_NEOPIXEL_ON, &neopixel_on_u8, DEFAULT_NEOPIXEL_ON ? 1 : 0);
+    load_u8(nh, KEY_NEOPIXEL_BR, &s_neopixel_brightness, DEFAULT_NEOPIXEL_BRIGHTNESS);
+    s_neopixel_en = (neopixel_en_u8 != 0);
+    s_neopixel_on = (neopixel_on_u8 != 0);
     s_mqtt_en = (mqtt_en_u8 != 0);
     /* Also catches a value persisted under the other board's range (e.g. NVS
      * carried over from a PY260 build after switching to OV3660) -- reset to
@@ -231,6 +254,9 @@ int8_t      config_mgr_get_contrast(void)      { return s_contrast; }
 int8_t      config_mgr_get_saturation(void)    { return s_saturation; }
 uint8_t     config_mgr_get_wb_mode(void)       { return s_wb_mode; }
 int8_t      config_mgr_get_exposure(void)      { return s_exposure; }
+bool        config_mgr_is_neopixel_enabled(void)      { return s_neopixel_en; }
+bool        config_mgr_get_neopixel_on(void)           { return s_neopixel_on; }
+uint8_t     config_mgr_get_neopixel_brightness(void)   { return s_neopixel_brightness; }
 
 /* --- Setters (update in-memory only) --- */
 
@@ -294,6 +320,9 @@ void config_mgr_set_exposure(int8_t v)
     }
     s_exposure = v;
 }
+void config_mgr_set_neopixel_enabled(bool v)     { s_neopixel_en = v; }
+void config_mgr_set_neopixel_on(bool v)          { s_neopixel_on = v; }
+void config_mgr_set_neopixel_brightness(uint8_t v) { s_neopixel_brightness = v; }
 
 /* --- Persist to NVS --- */
 
@@ -327,6 +356,9 @@ esp_err_t config_mgr_save(void)
     if (err == ESP_OK) err = nvs_set_i8(h,  KEY_SATURATION, s_saturation);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_WB_MODE,    s_wb_mode);
     if (err == ESP_OK) err = nvs_set_i8(h,  KEY_EXPOSURE,   s_exposure);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_EN, s_neopixel_en ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_ON, s_neopixel_on ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_BR, s_neopixel_brightness);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set failed err=0x%x — aborting save without commit", err);
