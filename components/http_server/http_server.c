@@ -894,7 +894,13 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
     // call chain overflowed it once buf grew past 4096 for the Firmware Update section -- crashing
     // this task (and, downstream, the device) on every /setup request. Not reentrant-unsafe: this
     // handler runs synchronously on a single httpd worker, never concurrently with itself.
-    static char buf[6144];
+    //
+    // Sized with real headroom (was 6144, silently overflowed to ~7.2KB once the NeoPixel/LED
+    // sections were added -- snprintf's return value is the length it WOULD have written even
+    // when truncated, so pos ended up past sizeof(buf) and httpd_resp_send() below sent whatever
+    // static memory happened to sit past the buffer as "HTML". The guard right before the send
+    // call is the real fix; this bump just keeps normal responses from needing it.
+    static char buf[10240];
     int pos = 0;
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
@@ -1132,6 +1138,17 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "border-radius:4px;cursor:pointer;font-size:1em'>"
         "</form></details>"
         "</body></html>");
+
+    // snprintf's return value is the length it WOULD have written even when truncated, so a
+    // future addition to this page that overflows buf would otherwise make pos exceed
+    // sizeof(buf) and this send whatever static memory sits past the buffer. Clamp and log
+    // instead of ever doing that again.
+    if (pos < 0) {
+        pos = 0;
+    } else if (pos >= (int)sizeof(buf)) {
+        ESP_LOGE(TAG, "setup_handler: buf overflowed (needed %d, cap %u) -- response truncated", pos, (unsigned)sizeof(buf));
+        pos = sizeof(buf) - 1;
+    }
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, buf, pos);
