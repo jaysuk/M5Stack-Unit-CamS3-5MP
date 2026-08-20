@@ -6,10 +6,9 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "wifi_provisioning/manager.h"
-#include "wifi_provisioning/scheme_ble.h"
 #include "esp_attr.h"
 #include "recovery_mgr.h"
+#include "wifi_provision.h"
 
 static const char *TAG = "wifi";
 static uint32_t s_disconnect_count = 0;
@@ -24,10 +23,13 @@ void wifi_start_reprovision(void)
 {
     s_reprovision_magic = REPROVISION_MAGIC;
     recovery_mgr_signal_planned_reboot(); // Prevents boot-loop counter from tripping
-    ESP_LOGW(TAG, "Reprovision requested — rebooting into BLE provisioning...");
+    ESP_LOGW(TAG, "Reprovision requested — rebooting into Wi-Fi setup AP...");
     esp_restart();
 }
 static char s_ip_addr[16] = {0};
+// Set for the duration of wifi_provision_run()'s own test-connect attempts, so this module's own
+// STA_START/STA_DISCONNECTED handling (below) doesn't fight over reconnecting -- wifi_provision.c
+// runs its own scoped event handlers for that instead.
 static volatile bool s_provisioning_active = false;
 
 static EventGroupHandle_t wifi_event_group;
@@ -36,32 +38,7 @@ static EventGroupHandle_t wifi_event_group;
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_PROV_EVENT) {
-        switch (event_id) {
-            case WIFI_PROV_START:
-                ESP_LOGI(TAG, "Provisioning started — open Espressif Provisioning app");
-                ESP_LOGI(TAG, "  Device: PROV_%s", CONFIG_UNITCAMS3_DEVICE_ID);
-                break;
-            case WIFI_PROV_CRED_RECV: {
-                wifi_sta_config_t *cfg = (wifi_sta_config_t *)event_data;
-                ESP_LOGI(TAG, "Received credentials for SSID: %s", (char *)cfg->ssid);
-                break;
-            }
-            case WIFI_PROV_CRED_FAIL: {
-                wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)event_data;
-                ESP_LOGE(TAG, "Provisioning failed: %s — try again in the app",
-                    (*reason == WIFI_PROV_STA_AUTH_ERROR) ? "auth error" : "AP not found");
-                break;
-            }
-            case WIFI_PROV_CRED_SUCCESS:
-                ESP_LOGI(TAG, "Provisioning credentials verified — connected");
-                break;
-            case WIFI_PROV_END:
-                s_provisioning_active = false;
-                wifi_prov_mgr_deinit();
-                break;
-        }
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         if (!s_provisioning_active) {
             esp_wifi_connect();
         }
@@ -108,7 +85,7 @@ esp_err_t wifi_init_sta(void)
         ESP_LOGW(TAG, "Reprovision magic detected — will clear Wi-Fi credentials");
     }
 
-    // NVS is required by Wi-Fi driver and provisioning manager
+    // NVS is required by the Wi-Fi driver (it stores STA/AP config there itself)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -125,8 +102,6 @@ esp_err_t wifi_init_sta(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
-                                                        &event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                         &event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
@@ -134,40 +109,32 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
                                                         &event_handler, NULL, NULL));
 
-    // Init provisioning manager with NimBLE scheme.
-    // WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BLE releases BLE memory after provisioning,
-    // recovering ~50KB of heap for the camera/HTTP stack.
-    wifi_prov_mgr_config_t prov_config = {
-        .scheme = wifi_prov_scheme_ble,
-        .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BLE,
-    };
-    ESP_ERROR_CHECK(wifi_prov_mgr_init(prov_config));
-
     if (reprovision) {
-        // Erases the "provisioned" flag in NVS so is_provisioned() returns false below.
-        // NVS write is safe here: camera DMA has not started yet.
-        wifi_prov_mgr_reset_provisioning();
-        ESP_LOGW(TAG, "Wi-Fi credentials cleared — entering BLE provisioning");
+        // esp_wifi_restore() resets the driver's NVS-backed config (incl. clearing any stored
+        // STA SSID/password) to defaults. Flash write, but safe here: camera DMA hasn't started.
+        esp_wifi_restore();
+        ESP_LOGW(TAG, "Wi-Fi credentials cleared — entering setup AP");
     }
 
-    bool provisioned = false;
-    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+    // esp_wifi persists STA config to NVS itself (WIFI_STORAGE_FLASH, the driver default) --
+    // reading it back right after init is how we tell "already provisioned" apart from "first
+    // boot / just reset" without a separate provisioning-manager library.
+    wifi_config_t sta_cfg = {0};
+    esp_err_t gc_err = esp_wifi_get_config(WIFI_IF_STA, &sta_cfg);
+    bool provisioned = (gc_err == ESP_OK) && (sta_cfg.sta.ssid[0] != '\0');
 
     if (!provisioned) {
-        ESP_LOGI(TAG, "No Wi-Fi credentials found — starting BLE provisioning");
         s_provisioning_active = true;
-        // Manager starts Wi-Fi internally and handles the STA connect cycle
-        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(
-            WIFI_PROV_SECURITY_1, NULL, "PROV_" CONFIG_UNITCAMS3_DEVICE_ID, NULL));
-        wifi_prov_mgr_wait(); // blocks until WIFI_PROV_END (credentials verified)
-        ESP_LOGI(TAG, "Provisioning complete");
+        wifi_provision_run(); // blocks until working credentials are found and verified
+        s_provisioning_active = false;
+        ESP_LOGI(TAG, "Provisioning complete — connecting with the newly saved credentials");
     } else {
         ESP_LOGI(TAG, "Found Wi-Fi credentials — connecting directly");
-        wifi_prov_mgr_deinit();
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        ESP_ERROR_CHECK(esp_wifi_start());
-        // STA_START event fires → event_handler calls esp_wifi_connect()
     }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    // STA_START event fires → event_handler calls esp_wifi_connect()
 
     // Disable power save for stable XCLK timing; full TX power for reliable uplink
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));

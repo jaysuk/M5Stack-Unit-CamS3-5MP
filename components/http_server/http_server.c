@@ -943,7 +943,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "</div>"
         "<label>Device ID "
         "<span title='Used as: mDNS hostname (&lt;id&gt;.local), MQTT topic prefix, "
-        "Home Assistant entity prefix, and BLE provisioning name (PROV_&lt;id&gt;). "
+        "Home Assistant entity prefix, and setup-AP name (PROV_&lt;id&gt;). "
         "Use lowercase letters, numbers and underscores only.' "
         "style='font-weight:normal;cursor:help;color:#6b7280'>&#9432;</span>"
         "</label>"
@@ -1131,9 +1131,9 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "<details><summary style='cursor:pointer;color:#dc2626;font-weight:bold'>Danger Zone</summary>"
         "<form method='POST' action='/setup/factory-reset' style='margin-top:12px'>"
         "<p style='color:#dc2626;font-size:0.9em'>Erases all settings and Wi-Fi credentials. "
-        "Device will reboot into BLE provisioning mode.</p>"
+        "Device will reboot into its Wi-Fi setup AP.</p>"
         "<input type='submit' value='Factory Reset' "
-        "onclick=\"return confirm('Erase all NVS data and reboot into BLE provisioning mode?')\" "
+        "onclick=\"return confirm('Erase all NVS data and reboot into the Wi-Fi setup AP?')\" "
         "style='background:#dc2626;color:#fff;border:none;padding:8px 16px;"
         "border-radius:4px;cursor:pointer;font-size:1em'>"
         "</form></details>"
@@ -1164,7 +1164,7 @@ static void setup_restart_task(void *arg)
     esp_restart();
 }
 
-/* One-shot task: deinit camera, erase all NVS, restart into BLE provisioning */
+/* One-shot task: deinit camera, erase all NVS, restart into the Wi-Fi setup AP */
 static void factory_reset_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -1174,21 +1174,20 @@ static void factory_reset_task(void *arg)
     esp_restart();
 }
 
-/* POST /setup/factory-reset — erase NVS and reboot into BLE provisioning mode */
+/* POST /setup/factory-reset — erase NVS and reboot into the Wi-Fi setup AP */
 static esp_err_t factory_reset_handler(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "Factory reset requested — erasing NVS and rebooting");
-    char dev_esc[192];
-    html_escape(dev_esc, config_mgr_get_device_id(), sizeof(dev_esc));
     char resp_html[512];
     snprintf(resp_html, sizeof(resp_html),
         "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>"
         "<h2>Factory Reset</h2>"
-        "<p>NVS erased. Device is rebooting into BLE provisioning mode.</p>"
-        "<p>Use the <strong>Espressif BLE Provisioning</strong> app to reconnect "
-        "(<strong>PROV_%s</strong>), then visit /setup to reconfigure.</p>"
+        "<p>NVS erased. Device is rebooting into its Wi-Fi setup AP.</p>"
+        "<p>Connect to <strong>PROV_%s</strong> (the device ID falls back to its firmware "
+        "default after a factory reset) and a setup page should open automatically; if not, "
+        "browse to <strong>http://192.168.4.1/</strong>. Then visit /setup to reconfigure.</p>"
         "</body></html>",
-        dev_esc);
+        CONFIG_UNITCAMS3_DEVICE_ID);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, resp_html, strlen(resp_html));
     xTaskCreate(factory_reset_task, "factory_rst", 4096, NULL, 5, NULL);

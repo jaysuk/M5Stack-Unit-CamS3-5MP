@@ -30,6 +30,16 @@ config UNITCAMS3_DEVICE_ID
     string "Device ID (used as MQTT topic prefix and HA entity prefix)"
     default "unitcams3"
 
+config UNITCAMS3_AP_PASSWORD
+    string "Setup AP Wi-Fi password (empty = open network)"
+    default ""
+    help
+        Password for the temporary "PROV_<device id>" Wi-Fi network the device broadcasts when it
+        has no stored Wi-Fi credentials yet (see wifi_provision.h). Empty means an open,
+        unencrypted network -- the standard, expected UX for this kind of one-time setup portal
+        (most consumer IoT devices work the same way), and it's only up while genuinely
+        unprovisioned. Set a password here if that tradeoff doesn't suit your environment.
+
 config UNITCAMS3_OTA_TOKEN
     string "OTA authentication token"
     default ""

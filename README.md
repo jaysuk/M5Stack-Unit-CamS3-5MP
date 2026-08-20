@@ -40,8 +40,31 @@ a live MJPEG stream and a single-JPEG snapshot from the *same* origin/port:
   last, including from MQTT (previously an MQTT-set value could vanish on the next reboot).
 
 With this, point the plugin's "Camera bridge URL" at `http://<device-ip>` (or `http://<device-id>.local`)
-with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration, BLE
-provisioning) are untouched — see below.
+with no port suffix. All upstream features (MQTT, OTA, Frigate/Home Assistant integration) are
+untouched — see below. Wi-Fi provisioning has also been reworked in this fork: it now uses a
+browser-based setup AP instead of the Espressif BLE Provisioning app — see
+[Wi-Fi setup](#wi-fi-setup) below.
+
+### Wi-Fi setup
+
+The upstream firmware provisions Wi-Fi credentials via BLE and the Espressif Provisioning
+mobile app. This fork replaces that with a browser-based captive portal, so provisioning needs
+nothing installed and works from any phone or laptop:
+
+- On first boot (or after a factory reset / `unitcams3/reprovision` MQTT command), the device
+  starts a Wi-Fi access point named **`PROV_<device id>`** (open by default; see
+  `UNITCAMS3_AP_PASSWORD` in Kconfig to require a password instead).
+- Connect to it — most phones/laptops detect it has no real internet and automatically open a
+  "sign in to network" page; if that doesn't happen, browse to `http://192.168.4.1/`.
+- The page lists nearby Wi-Fi networks (or type one in manually, for hidden networks), enter its
+  password, and submit. The device test-connects before accepting the credentials, so a typo'd
+  password gets rejected with a clear error rather than silently getting saved and leaving the
+  device stuck retrying forever on every future boot.
+- Once connected, the setup AP disappears and the device continues booting onto your network as
+  usual — visit `/setup` (via its new IP, or `http://<device-id>.local`) from there.
+
+This is implemented entirely with core `esp_wifi`/`esp_netif`/`esp_http_server` APIs (see
+`components/wifi_provision/`) — no BLE stack, freeing the ~50KB of heap NimBLE used to reserve.
 
 ### NeoPixel ring (optional work light)
 
@@ -94,7 +117,7 @@ Everything else in this README describes the upstream project as-is.
 ## Quick Start
 
 1. **Flash** — `bash build.sh && bash flash.sh`
-2. **Provision Wi-Fi** — on first boot the device advertises as `PROV_unitcams3` over BLE; open the [Espressif BLE Provisioning](https://apps.apple.com/app/esp-ble-provisioning/id1473590141) app, enter your Wi-Fi credentials
+2. **Provision Wi-Fi** — on first boot the device broadcasts a `PROV_unitcams3` Wi-Fi network; connect to it, a setup page should open automatically (or browse to `http://192.168.4.1/`), and enter your Wi-Fi credentials — see [Wi-Fi setup](#wi-fi-setup)
 3. **Configure** — open `http://<device-ip>/setup` in a browser; set your MQTT broker URL and device ID, then submit to save and reboot
 4. **Stream** — point Frigate (or any MJPEG client) at `http://<device-ip>:81/stream`
 
@@ -137,7 +160,8 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
 - **Core dump to flash** — download crash dumps via `GET /api/coredump`
 - **Web log viewer** — `GET /api/logs` returns the full boot and runtime log from a 16 KB PSRAM ring buffer
 - **mDNS** — device is reachable at `<device-id>.local` (e.g. `unitcams3.local`) in addition to its IP
-- **BLE Wi-Fi provisioning** — no hardcoded credentials; first-boot BLE setup
+- **Browser-based Wi-Fi provisioning** — no hardcoded credentials; first-boot setup AP with a
+  captive portal, see [Wi-Fi setup](#wi-fi-setup) above
 
 ---
 
@@ -147,7 +171,7 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
   or follow the [manual installation guide](https://docs.espressif.com/projects/esp-idf/en/v5.3.2/esp32s3/get-started/)
   **or ESP-IDF v6.0** *(beta)* — must be installed manually to `~/esp/esp-idf-v6`; see [IDF v6 build notes](#idf-v60-beta) below (`setup_idf.sh` handles v5 only)
 - Python 3.10+ (v5 scripts), Python 3.11 (v6 managed component toolchain)
-- **Espressif BLE Provisioning** app — [iOS](https://apps.apple.com/app/esp-ble-provisioning/id1473590141) / [Android](https://play.google.com/store/apps/details?id=com.espressif.provble)
+- A phone, tablet, or laptop to connect to the device's setup AP (see [Wi-Fi setup](#wi-fi-setup)) — no app required
 - An MQTT broker on your local network (e.g., Mosquitto)
 
 ---
@@ -314,15 +338,11 @@ across power cycles and OTA updates.
 
 ## Wi-Fi Provisioning
 
-On first boot (or after NVS erase) the device starts BLE advertising as
-**`PROV_unitcams3`**.
+See [Wi-Fi setup](#wi-fi-setup) above — on first boot (or after NVS erase) the device starts a
+browser-based setup AP, **`PROV_unitcams3`**.
 
-1. Open the **Espressif BLE Provisioning** app on your phone(Available in the Apple App Store and Google Play Store).
-2. Scan for `PROV_unitcams3` and tap it.
-3. Enter your Wi-Fi credentials.
-4. The device connects, stores credentials in NVS, and reboots — BLE is not active on subsequent boots.
-
-To re-provision: erase NVS (see Troubleshooting below).
+To re-provision: send `unitcams3/reprovision` over MQTT, use `/setup`'s Factory Reset, or erase
+NVS (see Troubleshooting below).
 
 ---
 
@@ -428,7 +448,7 @@ All topics use the **Device ID** as a prefix (default: `unitcams3`).
 | `unitcams3/fps_cap/set` | `0`–`15` | Broadcaster FPS cap (0 = unlimited); not persisted |
 | `unitcams3/led/set` | `1` / `0` | LED on / off |
 | `unitcams3/restart` | _(any)_ | Trigger `esp_restart()` |
-| `unitcams3/reprovision` | _(any)_ | Wipe Wi-Fi credentials and reboot into BLE provisioning |
+| `unitcams3/reprovision` | _(any)_ | Wipe Wi-Fi credentials and reboot into the Wi-Fi setup AP |
 | `unitcams3/ota/set` | JSON (see OTA section) | Trigger OTA update |
 
 ---
@@ -532,8 +552,8 @@ from a software reset alone.
 **Fix:** XCLK is already hardcoded to 10 MHz in `main/main.c`. Do not increase it.
 If you see NO-SOI errors, check that `CAM_XCLK_FREQ_HZ` is `10000000`.
 
-### Device not advertising BLE / already provisioned
-**Symptom:** App cannot find `PROV_unitcams3`.
+### Setup AP not appearing / already provisioned
+**Symptom:** Can't find `PROV_unitcams3` in the Wi-Fi network list.
 **Cause:** Wi-Fi credentials are stored in NVS from a previous provisioning.
 **Fix:** Erase NVS — connect to serial monitor and hold the reset button, or:
 ```bash

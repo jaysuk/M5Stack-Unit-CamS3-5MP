@@ -1,14 +1,12 @@
 ## IDF Component Manager Manifest
 ## Managed components required for IDF 6.0+ (removed from built-in set in v6).
 ## Rules gate each dependency so they are only resolved on IDF 6+ — on IDF 5.x
-## the built-in mqtt/json/wifi_provisioning components are used instead.
+## the built-in mqtt/json components are used instead. Wi-Fi provisioning is our own
+## wifi_provision component (esp_wifi/esp_netif/esp_http_server only), so it needs no
+## managed dependency on either IDF version.
 dependencies:
   espressif/mqtt:
     version: "^1.0.0"
-    rules:
-      - if: "idf_version >=6.0"
-  espressif/network_provisioning:
-    version: "^1.0.5"
     rules:
       - if: "idf_version >=6.0"
   espressif/cjson:

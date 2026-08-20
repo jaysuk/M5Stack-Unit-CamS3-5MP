@@ -87,15 +87,6 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # ==============================================================================
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
-# ==============================================================================
-# BLUETOOTH (NimBLE — required for wifi_provisioning BLE scheme)
-# First-boot: device advertises as "PROV_unitcams3" in Espressif Provisioning app
-# Credentials stored in NVS; subsequent boots connect directly (BLE not active)
-# ==============================================================================
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=y
-
 # IDF v6-beta bug: cache_utils.c line 202 debug assertion calls xTaskGetSchedulerState()
 # (-> vPortTakeLock, not IRAM_ATTR) BEFORE spi_flash_restore_cache().
 # Disabling assertions (NDEBUG) skips that code path and is correct for production firmware.
