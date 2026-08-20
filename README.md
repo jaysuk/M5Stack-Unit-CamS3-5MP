@@ -74,6 +74,16 @@ on/off + brightness control next to the camera view, calling the device's `GET`/
 from `POST` / `"enabled":false` from `GET`) and simply doesn't show the control — no configuration
 needed on the plugin side.
 
+### Onboard LED
+
+The board also has a simple non-addressable LED wired to **GPIO14** (active high) — this one's
+built in, so there's no wiring step or enable toggle. It's controllable three ways: the existing
+`unitcams3/led/set` MQTT topic, a plain **On** checkbox under *Onboard LED* on `/setup` (applies
+immediately), and `GET`/`POST /api/led` (`{"on": true|false}` / form body `on=0|1`). Its state is
+persisted and restored across reboots. Same as the NeoPixel ring, the **Duet Tool Align** plugin
+shows an on/off control for it next to the camera view — this one has no "enabled" gate to check,
+so it's always shown.
+
 Everything else in this README describes the upstream project as-is.
 
 ---
@@ -117,6 +127,8 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
 - **Camera image controls** via MQTT — brightness, contrast, saturation, white balance
 - **Optional NeoPixel (WS2812) ring work light** — on/off + brightness, white only; see
   [NeoPixel ring](#neopixel-ring-optional-work-light) above
+- **Onboard LED control** via MQTT, `/setup`, and `GET`/`POST /api/led` — see
+  [Onboard LED](#onboard-led) above
 - **URL-based OTA** — publish firmware URL to MQTT; optional token auth and SHA-256 integrity verification before flashing
 - **Recovery manager** — NVS boot-loop detection, 2-minute health timer, OTA rollback
 - **Core dump to flash** — download crash dumps via `GET /api/coredump`

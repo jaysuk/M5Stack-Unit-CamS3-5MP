@@ -21,6 +21,7 @@
 #include "recovery_mgr.h"
 #include "ota_mgr.h"
 #include "neopixel_mgr.h"
+#include "led_mgr.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "freertos/semphr.h"
@@ -703,6 +704,61 @@ static esp_err_t neopixel_post_handler(httpd_req_t *req)
 #undef NEOPIXEL_BODY_MAX
 }
 
+// Handler for "/api/led" (GET) — the onboard GPIO14 LED. Always available (built into the
+// board, no wiring/enable gate like the NeoPixel ring), so this is just its current state.
+static esp_err_t led_get_handler(httpd_req_t *req)
+{
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "{\"on\":%s}", led_mgr_get() ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, buf, len);
+}
+
+// Handler for "/api/led" (POST) — form body on=0|1. Applies immediately and updates config_mgr's
+// in-memory state (see led_mgr.h) so it's included in the next Save & Restart, but does not
+// itself write NVS -- safe to call while the camera's DMA pipeline is running.
+static esp_err_t led_post_handler(httpd_req_t *req)
+{
+#define LED_BODY_MAX 32
+    char body[LED_BODY_MAX + 1];
+    int total = req->content_len;
+    if (total > LED_BODY_MAX) total = LED_BODY_MAX;
+
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, body + received, total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) break;
+        received += r;
+    }
+    body[received > 0 ? received : 0] = '\0';
+
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    bool on = led_mgr_get();
+    char on_s[8] = {0};
+    char *saveptr = NULL;
+    char *pair = strtok_r(body, "&", &saveptr);
+    while (pair) {
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            if (strcmp(pair, "on") == 0) strlcpy(on_s, eq + 1, sizeof(on_s));
+        }
+        pair = strtok_r(NULL, "&", &saveptr);
+    }
+    if (on_s[0]) on = (atoi(on_s) != 0);
+
+    led_mgr_set(on);
+
+    char resp[32];
+    int len = snprintf(resp, sizeof(resp), "{\"on\":%s}", on ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, len);
+#undef LED_BODY_MAX
+}
+
 // Handler for "/api/coredump" — stream raw coredump partition
 static esp_err_t coredump_handler(httpd_req_t *req)
 {
@@ -1020,6 +1076,24 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
             config_mgr_get_neopixel_on() ? " checked" : "",
             config_mgr_get_neopixel_brightness());
     }
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "<hr>"
+        "<h3>Onboard LED</h3>"
+        "<label><input type='checkbox' id='led_on'%s onchange='ledApply()'> On</label>"
+        "<p id='led_status' style='font-size:0.9em;color:#6b7280'></p>"
+        "<script>function ledApply(){"
+        "var on=document.getElementById('led_on').checked?1:0;"
+        "var st=document.getElementById('led_status');"
+        "st.textContent='Applying...';"
+        "fetch('/api/led',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+        "body:'on='+on}).then(function(r){"
+        "if(!r.ok){return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});}"
+        "return r.json();"
+        "}).then(function(j){st.textContent='Applied: '+(j.on?'on':'off')+'.';"
+        "}).catch(function(e){st.textContent='Failed: '+e.message;});}"
+        "</script>",
+        led_mgr_get() ? " checked" : "");
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "<hr>"
@@ -1564,7 +1638,7 @@ esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.core_id = 1;
     config.stack_size = 8192;
-    config.max_uri_handlers = 16; // 8 original + /snapshot + /stream (plugin) + /setup/image + /setup/ota + /api/neopixel (GET+POST)
+    config.max_uri_handlers = 18; // 8 original + /snapshot + /stream (plugin) + /setup/image + /setup/ota + /api/neopixel (GET+POST) + /api/led (GET+POST)
     config.max_open_sockets = 10;
     config.recv_wait_timeout = 5;   // 5s recv timeout to prevent WDT panics on network stall
     config.send_wait_timeout = 5;   // 5s send timeout to prevent WDT panics on network stall
@@ -1650,6 +1724,22 @@ esp_err_t start_http_server(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(s_server, &neopixel_post_uri);
+
+        httpd_uri_t led_get_uri = {
+            .uri       = "/api/led",
+            .method    = HTTP_GET,
+            .handler   = led_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &led_get_uri);
+
+        httpd_uri_t led_post_uri = {
+            .uri       = "/api/led",
+            .method    = HTTP_POST,
+            .handler   = led_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(s_server, &led_post_uri);
 
         httpd_uri_t setup_get_uri = {
             .uri       = "/setup",

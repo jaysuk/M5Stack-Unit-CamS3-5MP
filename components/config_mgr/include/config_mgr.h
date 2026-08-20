@@ -52,6 +52,11 @@ bool        config_mgr_get_neopixel_on(void);
 uint8_t     config_mgr_get_neopixel_brightness(void);
 uint16_t    config_mgr_get_neopixel_count(void);
 
+/* Onboard GPIO14 LED (see led_mgr.h). Always available -- unlike the NeoPixel ring there's no
+ * "enabled" gate, since this LED is built into the board rather than something the user wires
+ * up. Persisted so it restores its last state across reboots, same as neopixel_on. */
+bool        config_mgr_get_led_on(void);
+
 /* Setters (update in-memory state only — call config_mgr_save() to persist) */
 void config_mgr_set_mqtt_url(const char *v);
 void config_mgr_set_mqtt_user(const char *v);
@@ -71,6 +76,7 @@ void config_mgr_set_neopixel_enabled(bool v);
 void config_mgr_set_neopixel_on(bool v);
 void config_mgr_set_neopixel_brightness(uint8_t v);
 void config_mgr_set_neopixel_count(uint16_t v);
+void config_mgr_set_led_on(bool v);
 
 /**
  * @brief Write all fields to NVS.

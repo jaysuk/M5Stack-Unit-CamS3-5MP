@@ -27,6 +27,7 @@ static const char *TAG = "config_mgr";
 #define KEY_NEOPIXEL_ON  "neopixel_on"
 #define KEY_NEOPIXEL_BR  "neopixel_br"
 #define KEY_NEOPIXEL_CNT "neopixel_cnt"
+#define KEY_LED_ON       "led_on"
 
 /* Field size limits (including null terminator) */
 #define MQTT_URL_MAX   128
@@ -84,6 +85,10 @@ static const char *TAG = "config_mgr";
 #define NEOPIXEL_COUNT_MIN 1
 #define NEOPIXEL_COUNT_MAX 300
 
+/* Onboard LED: off by default, same reasoning as the NeoPixel ring -- shouldn't light up on
+ * its own the first time this firmware boots with LED control added. */
+#define DEFAULT_LED_ON false
+
 /* In-memory config state */
 static char s_mqtt_url[MQTT_URL_MAX];
 static char s_mqtt_user[MQTT_USER_MAX];
@@ -103,6 +108,7 @@ static bool     s_neopixel_en;
 static bool     s_neopixel_on;
 static uint8_t  s_neopixel_brightness;
 static uint16_t s_neopixel_count;
+static bool     s_led_on;
 
 static bool s_initialized = false;
 
@@ -206,6 +212,7 @@ esp_err_t config_mgr_init(void)
         s_neopixel_on = DEFAULT_NEOPIXEL_ON;
         s_neopixel_brightness = DEFAULT_NEOPIXEL_BRIGHTNESS;
         s_neopixel_count = DEFAULT_NEOPIXEL_COUNT;
+        s_led_on = DEFAULT_LED_ON;
         s_initialized = true;
         return ESP_OK;
     }
@@ -226,6 +233,9 @@ esp_err_t config_mgr_init(void)
     load_u8(nh, KEY_NEOPIXEL_ON, &neopixel_on_u8, DEFAULT_NEOPIXEL_ON ? 1 : 0);
     load_u8(nh, KEY_NEOPIXEL_BR, &s_neopixel_brightness, DEFAULT_NEOPIXEL_BRIGHTNESS);
     load_u16(nh, KEY_NEOPIXEL_CNT, &s_neopixel_count, DEFAULT_NEOPIXEL_COUNT);
+    uint8_t led_on_u8 = DEFAULT_LED_ON ? 1 : 0;
+    load_u8(nh, KEY_LED_ON, &led_on_u8, DEFAULT_LED_ON ? 1 : 0);
+    s_led_on = (led_on_u8 != 0);
     s_neopixel_en = (neopixel_en_u8 != 0);
     s_neopixel_on = (neopixel_on_u8 != 0);
     s_mqtt_en = (mqtt_en_u8 != 0);
@@ -282,6 +292,7 @@ bool        config_mgr_is_neopixel_enabled(void)      { return s_neopixel_en; }
 bool        config_mgr_get_neopixel_on(void)           { return s_neopixel_on; }
 uint8_t     config_mgr_get_neopixel_brightness(void)   { return s_neopixel_brightness; }
 uint16_t    config_mgr_get_neopixel_count(void)        { return s_neopixel_count; }
+bool        config_mgr_get_led_on(void)                { return s_led_on; }
 
 /* --- Setters (update in-memory only) --- */
 
@@ -356,6 +367,7 @@ void config_mgr_set_neopixel_count(uint16_t v)
     }
     s_neopixel_count = v;
 }
+void config_mgr_set_led_on(bool v)               { s_led_on = v; }
 
 /* --- Persist to NVS --- */
 
@@ -393,6 +405,7 @@ esp_err_t config_mgr_save(void)
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_ON, s_neopixel_on ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_BR, s_neopixel_brightness);
     if (err == ESP_OK) err = nvs_set_u16(h, KEY_NEOPIXEL_CNT, s_neopixel_count);
+    if (err == ESP_OK) err = nvs_set_u8(h,  KEY_LED_ON, s_led_on ? 1 : 0);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set failed err=0x%x — aborting save without commit", err);
