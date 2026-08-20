@@ -39,6 +39,8 @@ jobs:
     permissions:
       contents: write       # needed to upload release assets
       id-token:  write      # needed for provenance attestation
+      attestations: write   # needed for provenance attestation -- id-token alone 403s with
+                             # "Resource not accessible by integration" against the attestations API
 
     steps:
       - uses: actions/checkout@v4
@@ -105,6 +107,8 @@ jobs:
     permissions:
       contents: write       # needed to upload release assets
       id-token:  write      # needed for provenance attestation
+      attestations: write   # needed for provenance attestation -- id-token alone 403s with
+                             # "Resource not accessible by integration" against the attestations API
 
     steps:
       - uses: actions/checkout@v4
