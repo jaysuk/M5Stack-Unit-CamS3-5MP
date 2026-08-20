@@ -52,7 +52,7 @@ bool        config_mgr_get_neopixel_on(void);
 uint8_t     config_mgr_get_neopixel_brightness(void);
 uint16_t    config_mgr_get_neopixel_count(void);
 
-/* Onboard GPIO14 LED (see led_mgr.h). Always available -- unlike the NeoPixel ring there's no
+/* Onboard status LED, a single WS2812 (see led_mgr.h). Always available -- unlike the NeoPixel ring there's no
  * "enabled" gate, since this LED is built into the board rather than something the user wires
  * up. Persisted so it restores its last state across reboots, same as neopixel_on. */
 bool        config_mgr_get_led_on(void);

@@ -8,7 +8,12 @@ extern "C" {
 #endif
 
 /**
- * @brief Configure the onboard LED (GPIO14, active high) and apply the persisted on/off state.
+ * @brief Configure the onboard status LED (a single WS2812, see CONFIG_UNITCAMS3_LED_PIN) and
+ *        apply the persisted on/off state.
+ *
+ * Driven via the same led_strip/RMT backend as the NeoPixel ring, just a single pixel -- this
+ * board's "status LED" is itself addressable, not a plain GPIO LED. White only, fixed brightness
+ * (see led_mgr.c) -- the ask here is on/off, not a dimmer or color picker.
  *
  * Call once at startup, after config_mgr_init() -- needs the persisted state to apply.
  */

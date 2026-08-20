@@ -301,7 +301,7 @@ void app_main(void)
     neopixel_mgr_init(); // no-op unless enabled in config -- see neopixel_mgr.h
 
     ESP_LOGI(TAG, "--- Onboard LED ---");
-    led_mgr_init(); // configures GPIO14 and restores its persisted on/off state
+    led_mgr_init(); // configures the onboard WS2812 status LED and restores its persisted on/off state
 
     ESP_LOGI(TAG, "--- Starting mDNS ---");
     mdns_init();

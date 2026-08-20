@@ -76,13 +76,16 @@ needed on the plugin side.
 
 ### Onboard LED
 
-The board also has a simple non-addressable LED wired to **GPIO14** (active high) — this one's
-built in, so there's no wiring step or enable toggle. It's controllable three ways: the existing
+The board also has a built-in status LED — itself a single WS2812, wired to **GPIO48** by
+default (confirmed by direct hardware inspection; earlier versions of this section assumed a
+plain active-low LED on GPIO14 based on M5Stack's official docs for a different board revision —
+if a build shows no response on GPIO48, override `UNITCAMS3_LED_PIN` via `idf.py menuconfig`).
+No wiring step or enable toggle since it's built in. It's controllable three ways: the existing
 `unitcams3/led/set` MQTT topic, a plain **On** checkbox under *Onboard LED* on `/setup` (applies
-immediately), and `GET`/`POST /api/led` (`{"on": true|false}` / form body `on=0|1`). Its state is
-persisted and restored across reboots. Same as the NeoPixel ring, the **Duet Tool Align** plugin
-shows an on/off control for it next to the camera view — this one has no "enabled" gate to check,
-so it's always shown.
+immediately), and `GET`/`POST /api/led` (`{"on": true|false}` / form body `on=0|1`) — white only,
+same reasoning as the NeoPixel ring. Its state is persisted and restored across reboots. Same as
+the NeoPixel ring, the **Duet Tool Align** plugin shows an on/off control for it next to the
+camera view — this one has no "enabled" gate to check, so it's always shown.
 
 Everything else in this README describes the upstream project as-is.
 

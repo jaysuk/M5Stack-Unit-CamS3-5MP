@@ -45,6 +45,17 @@ config UNITCAMS3_COREDUMP_TOKEN
         Add 'Authorization: Bearer <this>' header to your request.
         An empty token disables authentication.
 
+config UNITCAMS3_LED_PIN
+    int "Onboard status LED data pin (GPIO number, WS2812)"
+    default 48
+    help
+        GPIO driving the board's built-in status LED -- confirmed by direct hardware inspection
+        to itself be a single WS2812 (not a plain digital LED as earlier assumed from M5Stack's
+        own official docs for a different board revision, which put a simple active-low LED on
+        GPIO14). GPIO48 is a common choice for an onboard addressable LED on ESP32-S3 designs
+        (e.g. Espressif's own DevKitC-1), but this can vary by board revision -- override here
+        (or via idf.py menuconfig) if a build ever shows no response on this pin.
+
 config UNITCAMS3_NEOPIXEL_PIN
     int "NeoPixel (WS2812) ring data pin (GPIO number)"
     default 2
