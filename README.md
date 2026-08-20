@@ -55,17 +55,18 @@ supported camera boards' pin maps (see `CAM_PIN_*` in `main/main.c`) and isn't a
 strapping pin, but always check your board's actual silkscreen/schematic before wiring — if GPIO2
 is unavailable on your unit, override the pin via `idf.py menuconfig` → *UnitCamS3 Firmware
 Configuration* → *NeoPixel (WS2812) ring data pin*, or edit `UNITCAMS3_NEOPIXEL_PIN` in
-`main/Kconfig.projbuild`.
-The default LED count is 16 (matching the ring this was built for); change
-`UNITCAMS3_NEOPIXEL_COUNT` the same way if yours differs.
+`main/Kconfig.projbuild`. Unlike the pin, the **LED count** is a runtime setting on `/setup` (see
+below) — `UNITCAMS3_NEOPIXEL_COUNT` in Kconfig only seeds its default (16, matching the ring this
+was built for) on first boot.
 
 A 16-LED WS2812 ring can draw up to ~1A at full white brightness — power it from the board's 5V
 rail (not a GPIO), and keep that in mind if you're running off USB power alone.
 
 **Enabling it** — open `/setup`, tick **"Enable NeoPixel ring"** under the new *NeoPixel Ring*
-section, and submit (**Save & Restart**). After the reboot, `/setup` shows a live **On/Off** +
-**brightness** control that applies immediately (no further reboot needed). The ring is white-only
-— there's no color picker, since the ask is a work light, not an RGB effect.
+section, set the **LED count** to match your ring/strip (1–300), and submit (**Save & Restart**).
+After the reboot, `/setup` shows a live **On/Off** + **brightness** control that applies
+immediately (no further reboot needed). The ring is white-only — there's no color picker, since
+the ask is a work light, not an RGB effect.
 
 This also lights up the **Duet Tool Align** plugin: once enabled, the plugin's UI shows the same
 on/off + brightness control next to the camera view, calling the device's `GET`/`POST

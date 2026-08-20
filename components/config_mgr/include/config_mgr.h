@@ -43,10 +43,14 @@ int8_t      config_mgr_get_exposure(void);
 /* NeoPixel ring: "enabled" is the /setup master switch (whether the hardware is even wired
  * up) -- gates neopixel_mgr_init() touching the RMT peripheral/GPIO at all, and is what the
  * duet-tool-align plugin checks before showing any light control. "on"/"brightness" are the
- * live state, white only (see neopixel_mgr.h). */
+ * live state, white only (see neopixel_mgr.h). "count" is the number of LEDs in the ring/strip;
+ * CONFIG_UNITCAMS3_NEOPIXEL_COUNT only seeds its initial value now -- like "enabled", a changed
+ * count only takes effect on the next neopixel_mgr_init() (i.e. after Save & Restart), since the
+ * led_strip driver's LED count is fixed for the life of the RMT device it creates. */
 bool        config_mgr_is_neopixel_enabled(void);
 bool        config_mgr_get_neopixel_on(void);
 uint8_t     config_mgr_get_neopixel_brightness(void);
+uint16_t    config_mgr_get_neopixel_count(void);
 
 /* Setters (update in-memory state only — call config_mgr_save() to persist) */
 void config_mgr_set_mqtt_url(const char *v);
@@ -66,6 +70,7 @@ void config_mgr_set_exposure(int8_t v);
 void config_mgr_set_neopixel_enabled(bool v);
 void config_mgr_set_neopixel_on(bool v);
 void config_mgr_set_neopixel_brightness(uint8_t v);
+void config_mgr_set_neopixel_count(uint16_t v);
 
 /**
  * @brief Write all fields to NVS.

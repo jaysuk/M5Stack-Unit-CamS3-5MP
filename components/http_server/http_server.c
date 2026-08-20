@@ -972,9 +972,12 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         "Enable NeoPixel ring (WS2812, wired to GPIO%d)</label>"
         "<p style='font-size:0.8em;color:#6b7280;margin:-4px 0 8px'>"
         "Only tick this if a WS2812/NeoPixel ring is physically connected to the pin above -- "
-        "see the README for wiring. Takes effect after Save &amp; Restart.</p>",
+        "see the README for wiring. Takes effect after Save &amp; Restart.</p>"
+        "<label>NeoPixel LED count</label>"
+        "<input type='text' name='neopixel_cnt' value='%u'>",
         config_mgr_is_neopixel_enabled() ? " checked" : "",
-        CONFIG_UNITCAMS3_NEOPIXEL_PIN);
+        CONFIG_UNITCAMS3_NEOPIXEL_PIN,
+        config_mgr_get_neopixel_count());
 
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "<p style='font-size:0.85em;color:#6b7280;margin-bottom:4px'>"
@@ -1337,6 +1340,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     char cd_token[64]   = {0};
     bool mqtt_en        = false;
     bool neopixel_en    = false;
+    char neopixel_cnt_s[8] = {0};
     char cam_res_s[8]   = {0};
     char jpeg_qual_s[8] = {0};
     char brightness_s[8] = {0};
@@ -1364,6 +1368,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
             else if (strcmp(key, "cd_token")  == 0) strlcpy(cd_token,    decoded, sizeof(cd_token));
             else if (strcmp(key, "mqtt_en")   == 0) mqtt_en = (decoded[0] == '1');
             else if (strcmp(key, "neopixel_en") == 0) neopixel_en = (decoded[0] == '1');
+            else if (strcmp(key, "neopixel_cnt") == 0) strlcpy(neopixel_cnt_s, decoded, sizeof(neopixel_cnt_s));
             else if (strcmp(key, "cam_res")   == 0) strlcpy(cam_res_s,   decoded, sizeof(cam_res_s));
             else if (strcmp(key, "jpeg_qual") == 0) strlcpy(jpeg_qual_s, decoded, sizeof(jpeg_qual_s));
             else if (strcmp(key, "brightness") == 0) strlcpy(brightness_s, decoded, sizeof(brightness_s));
@@ -1435,6 +1440,11 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "exposure must be -5 to 5");
         return ESP_FAIL;
     }
+    int neopixel_cnt = atoi(neopixel_cnt_s);
+    if (neopixel_cnt < 1 || neopixel_cnt > 300) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "neopixel_cnt must be 1-300");
+        return ESP_FAIL;
+    }
 
     /* Apply to in-memory config */
     config_mgr_set_mqtt_url(mqtt_url);
@@ -1445,6 +1455,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     if (cd_token[0])  config_mgr_set_coredump_token(cd_token);
     config_mgr_set_mqtt_enabled(mqtt_en);
     config_mgr_set_neopixel_enabled(neopixel_en);
+    config_mgr_set_neopixel_count((uint16_t)neopixel_cnt);
     config_mgr_set_cam_resolution((uint8_t)cam_res);
     config_mgr_set_jpeg_quality((uint8_t)jpeg_qual);
     config_mgr_set_brightness((int8_t)brightness);

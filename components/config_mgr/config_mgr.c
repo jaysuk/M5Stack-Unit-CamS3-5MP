@@ -23,9 +23,10 @@ static const char *TAG = "config_mgr";
 #define KEY_SATURATION "saturation"
 #define KEY_WB_MODE    "wb_mode"
 #define KEY_EXPOSURE   "exposure"
-#define KEY_NEOPIXEL_EN "neopixel_en"
-#define KEY_NEOPIXEL_ON "neopixel_on"
-#define KEY_NEOPIXEL_BR "neopixel_br"
+#define KEY_NEOPIXEL_EN  "neopixel_en"
+#define KEY_NEOPIXEL_ON  "neopixel_on"
+#define KEY_NEOPIXEL_BR  "neopixel_br"
+#define KEY_NEOPIXEL_CNT "neopixel_cnt"
 
 /* Field size limits (including null terminator) */
 #define MQTT_URL_MAX   128
@@ -79,6 +80,9 @@ static const char *TAG = "config_mgr";
 #define DEFAULT_NEOPIXEL_EN false
 #define DEFAULT_NEOPIXEL_ON false
 #define DEFAULT_NEOPIXEL_BRIGHTNESS 40
+#define DEFAULT_NEOPIXEL_COUNT CONFIG_UNITCAMS3_NEOPIXEL_COUNT
+#define NEOPIXEL_COUNT_MIN 1
+#define NEOPIXEL_COUNT_MAX 300
 
 /* In-memory config state */
 static char s_mqtt_url[MQTT_URL_MAX];
@@ -95,9 +99,10 @@ static int8_t  s_contrast;
 static int8_t  s_saturation;
 static uint8_t s_wb_mode;
 static int8_t  s_exposure;
-static bool    s_neopixel_en;
-static bool    s_neopixel_on;
-static uint8_t s_neopixel_brightness;
+static bool     s_neopixel_en;
+static bool     s_neopixel_on;
+static uint8_t  s_neopixel_brightness;
+static uint16_t s_neopixel_count;
 
 static bool s_initialized = false;
 
@@ -150,6 +155,18 @@ static void load_i8(nvs_handle_t h, const char *key, int8_t *dst, int8_t fallbac
     }
 }
 
+/* Load a u16 key; on ESP_ERR_NVS_NOT_FOUND use the fallback */
+static void load_u16(nvs_handle_t h, const char *key, uint16_t *dst, uint16_t fallback)
+{
+    esp_err_t err = nvs_get_u16(h, key, dst);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        *dst = fallback;
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_get_u16(%s) err=0x%x, using fallback", key, err);
+        *dst = fallback;
+    }
+}
+
 esp_err_t config_mgr_init(void)
 {
     nvs_handle_t h;
@@ -188,6 +205,7 @@ esp_err_t config_mgr_init(void)
         s_neopixel_en = DEFAULT_NEOPIXEL_EN;
         s_neopixel_on = DEFAULT_NEOPIXEL_ON;
         s_neopixel_brightness = DEFAULT_NEOPIXEL_BRIGHTNESS;
+        s_neopixel_count = DEFAULT_NEOPIXEL_COUNT;
         s_initialized = true;
         return ESP_OK;
     }
@@ -207,9 +225,15 @@ esp_err_t config_mgr_init(void)
     load_u8(nh, KEY_NEOPIXEL_EN, &neopixel_en_u8, DEFAULT_NEOPIXEL_EN ? 1 : 0);
     load_u8(nh, KEY_NEOPIXEL_ON, &neopixel_on_u8, DEFAULT_NEOPIXEL_ON ? 1 : 0);
     load_u8(nh, KEY_NEOPIXEL_BR, &s_neopixel_brightness, DEFAULT_NEOPIXEL_BRIGHTNESS);
+    load_u16(nh, KEY_NEOPIXEL_CNT, &s_neopixel_count, DEFAULT_NEOPIXEL_COUNT);
     s_neopixel_en = (neopixel_en_u8 != 0);
     s_neopixel_on = (neopixel_on_u8 != 0);
     s_mqtt_en = (mqtt_en_u8 != 0);
+    if (s_neopixel_count < NEOPIXEL_COUNT_MIN || s_neopixel_count > NEOPIXEL_COUNT_MAX) {
+        ESP_LOGW(TAG, "neopixel_count=%u out of range (%u-%u) — resetting to default (%u)",
+                 s_neopixel_count, NEOPIXEL_COUNT_MIN, NEOPIXEL_COUNT_MAX, DEFAULT_NEOPIXEL_COUNT);
+        s_neopixel_count = DEFAULT_NEOPIXEL_COUNT;
+    }
     /* Also catches a value persisted under the other board's range (e.g. NVS
      * carried over from a PY260 build after switching to OV3660) -- reset to
      * neutral rather than pass a stale out-of-range value to the sensor. */
@@ -257,6 +281,7 @@ int8_t      config_mgr_get_exposure(void)      { return s_exposure; }
 bool        config_mgr_is_neopixel_enabled(void)      { return s_neopixel_en; }
 bool        config_mgr_get_neopixel_on(void)           { return s_neopixel_on; }
 uint8_t     config_mgr_get_neopixel_brightness(void)   { return s_neopixel_brightness; }
+uint16_t    config_mgr_get_neopixel_count(void)        { return s_neopixel_count; }
 
 /* --- Setters (update in-memory only) --- */
 
@@ -323,6 +348,14 @@ void config_mgr_set_exposure(int8_t v)
 void config_mgr_set_neopixel_enabled(bool v)     { s_neopixel_en = v; }
 void config_mgr_set_neopixel_on(bool v)          { s_neopixel_on = v; }
 void config_mgr_set_neopixel_brightness(uint8_t v) { s_neopixel_brightness = v; }
+void config_mgr_set_neopixel_count(uint16_t v)
+{
+    if (v < NEOPIXEL_COUNT_MIN || v > NEOPIXEL_COUNT_MAX) {
+        ESP_LOGW(TAG, "set_neopixel_count: %u out of range (%u-%u) — ignoring", v, NEOPIXEL_COUNT_MIN, NEOPIXEL_COUNT_MAX);
+        return;
+    }
+    s_neopixel_count = v;
+}
 
 /* --- Persist to NVS --- */
 
@@ -359,6 +392,7 @@ esp_err_t config_mgr_save(void)
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_EN, s_neopixel_en ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_ON, s_neopixel_on ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h,  KEY_NEOPIXEL_BR, s_neopixel_brightness);
+    if (err == ESP_OK) err = nvs_set_u16(h, KEY_NEOPIXEL_CNT, s_neopixel_count);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set failed err=0x%x — aborting save without commit", err);

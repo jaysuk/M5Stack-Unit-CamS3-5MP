@@ -58,11 +58,14 @@ config UNITCAMS3_NEOPIXEL_PIN
         never touch this pin or the RMT peripheral at all.
 
 config UNITCAMS3_NEOPIXEL_COUNT
-    int "NeoPixel ring LED count"
+    int "NeoPixel ring LED count (default)"
     default 16
     range 1 300
     help
-        Number of WS2812 LEDs in the ring/strip connected to the data pin above.
+        Default number of WS2812 LEDs in the ring/strip connected to the data pin above. Only
+        used to seed the persisted value the first time the device boots (or after a factory
+        reset) -- from then on this is overridable at runtime on /setup, same as "Enable
+        NeoPixel ring", and takes effect after Save & Restart.
 
 config UNITCAMS3_FPS_TEST_MODE
     bool "FPS test mode (disables Wi-Fi, HTTP, MQTT — camera throughput measurement only)"

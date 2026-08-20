@@ -20,7 +20,8 @@ static esp_err_t apply(bool on, uint8_t brightness)
         esp_err_t err = led_strip_clear(s_strip);
         return err;
     }
-    for (int i = 0; i < CONFIG_UNITCAMS3_NEOPIXEL_COUNT; i++) {
+    uint16_t count = config_mgr_get_neopixel_count();
+    for (int i = 0; i < count; i++) {
         esp_err_t err = led_strip_set_pixel(s_strip, i, brightness, brightness, brightness);
         if (err != ESP_OK) {
             return err;
@@ -38,7 +39,7 @@ esp_err_t neopixel_mgr_init(void)
 
     led_strip_config_t strip_config = {
         .strip_gpio_num = CONFIG_UNITCAMS3_NEOPIXEL_PIN,
-        .max_leds = CONFIG_UNITCAMS3_NEOPIXEL_COUNT,
+        .max_leds = config_mgr_get_neopixel_count(),
         .led_model = LED_MODEL_WS2812,
         .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
         .flags.invert_out = false,
@@ -51,8 +52,8 @@ esp_err_t neopixel_mgr_init(void)
 
     esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "led_strip_new_rmt_device (GPIO%d, %d LEDs) failed: %s",
-                 CONFIG_UNITCAMS3_NEOPIXEL_PIN, CONFIG_UNITCAMS3_NEOPIXEL_COUNT, esp_err_to_name(err));
+        ESP_LOGE(TAG, "led_strip_new_rmt_device (GPIO%d, %u LEDs) failed: %s",
+                 CONFIG_UNITCAMS3_NEOPIXEL_PIN, (unsigned)strip_config.max_leds, esp_err_to_name(err));
         return err;
     }
 
@@ -61,8 +62,8 @@ esp_err_t neopixel_mgr_init(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Applying saved NeoPixel state failed: %s", esp_err_to_name(err));
     }
-    ESP_LOGI(TAG, "NeoPixel ring ready: GPIO%d, %d LEDs, on=%d brightness=%d",
-             CONFIG_UNITCAMS3_NEOPIXEL_PIN, CONFIG_UNITCAMS3_NEOPIXEL_COUNT,
+    ESP_LOGI(TAG, "NeoPixel ring ready: GPIO%d, %u LEDs, on=%d brightness=%d",
+             CONFIG_UNITCAMS3_NEOPIXEL_PIN, (unsigned)strip_config.max_leds,
              config_mgr_get_neopixel_on(), config_mgr_get_neopixel_brightness());
     return ESP_OK;
 }
