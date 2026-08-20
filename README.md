@@ -5,7 +5,7 @@ video over HTTP, integrates with [Frigate NVR](https://frigate.video) and
 [Home Assistant](https://www.home-assistant.io) via MQTT, and supports
 over-the-air firmware updates triggered from an MQTT broker.
 
-[![Build](https://github.com/hbentel/M5Stack-Unit-CamS3-5MP/actions/workflows/build.yml/badge.svg)](https://github.com/hbentel/M5Stack-Unit-CamS3-5MP/actions/workflows/build.yml)
+[![Build](https://github.com/jaysuk/M5Stack-Unit-CamS3-5MP/actions/workflows/build.yml/badge.svg)](https://github.com/jaysuk/M5Stack-Unit-CamS3-5MP/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ---
@@ -127,15 +127,21 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
 
 ## Hardware
 
-**Supported board: M5Stack Unit CamS3-5MP**
+Two board variants are supported, selected via `UNITCAMS3_CAMERA_BOARD` in Kconfig (or by
+downloading the matching pre-built binary — see [Pre-built Firmware](#pre-built-firmware)):
 
+**PY260** (default) — **M5Stack Unit CamS3-5MP**
 - SoC: ESP32-S3 (dual-core Xtensa LX7 @ 240 MHz)
 - Sensor: GalaxyCore PY260 (2MP / 5MP output via JPEG compression)
 - Flash: 16 MB QIO
 - PSRAM: 8 MB Octal (OPI) — 40 MHz
 
-> **Other boards are not supported without pin remapping.** The pin constants in
-> `main/main.c` are hardcoded for the M5Stack Unit CamS3-5MP schematic.
+**OV3660** — generic ESP32-S3-CAM boards (e.g. Goouuu-Cam pinout)
+- SoC: ESP32-S3
+- Sensor: OmniVision OV3660
+
+> Other boards need pin remapping — the `CAM_PIN_*` constants in `main/main.c` are hardcoded per
+> board, gated on which of the two above is selected.
 
 ---
 
@@ -178,26 +184,56 @@ The device IP is printed to the serial monitor on boot and is shown on the `/set
 
 ## Pre-built Firmware
 
-Each [GitHub Release](https://github.com/hbentel/M5Stack-Unit-CamS3-5MP/releases)
-includes firmware binaries built by GitHub Actions directly from the tagged source:
+Each [GitHub Release](https://github.com/jaysuk/M5Stack-Unit-CamS3-5MP/releases)
+includes firmware binaries built by GitHub Actions directly from the tagged source, for both
+supported boards (files are prefixed `unitcams3_py260_` or `unitcams3_ov3660_` — see
+[Camera board / sensor](#hardware) if you're not sure which you have):
 
 | File | Use |
 |------|-----|
-| `unitcams3_merged.bin` | **Recommended** — single file, flash at offset `0x0` |
-| `unitcams3_firmware.bin` | App partition only (OTA updates) |
-| `bootloader.bin`, `partition-table.bin`, `ota_data_initial.bin` | Individual regions |
+| `..._merged.bin` | **Recommended** — single file, flash at offset `0x0` |
+| `..._firmware.bin` | App partition only (OTA updates) |
+| `..._bootloader.bin`, `..._partition-table.bin`, `..._ota_data_initial.bin` | Individual regions, for GUI flashers that want them separately |
 
-### Flash the merged binary (no build required)
+You don't need Python, `pip`, or the ESP-IDF toolchain installed to flash a pre-built binary —
+either of the two options below works on Windows, macOS, and Linux with nothing to install
+beyond a browser or a single downloaded executable.
 
-Put the device in [Download Mode](#2-download-mode-m5stack-unit-cams3-5mp), then:
+### Option A: Web-based flasher (recommended, no install at all)
 
-```bash
-pip install esptool
-esptool.py --chip esp32s3 -b 460800 \
-  --before default_reset --after hard_reset \
-  write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB \
-  0x0 unitcams3_merged.bin
-```
+Espressif's own [esptool-js](https://espressif.github.io/esptool-js/) flashes over USB directly
+from **Chrome or Edge** (any OS — it uses the browser's Web Serial API, not a native app).
+
+1. Download the `..._merged.bin` file for your board from the [latest release](https://github.com/jaysuk/M5Stack-Unit-CamS3-5MP/releases/latest).
+2. Put the device in [Download Mode](#2-download-mode-m5stack-unit-cams3-5mp) if it's brand new,
+   crash-looping, or otherwise unresponsive (a normally-running device doesn't need this).
+3. Open [espressif.github.io/esptool-js](https://espressif.github.io/esptool-js/), click
+   **Connect**, and pick the device's serial port from the browser prompt.
+4. Set the **Flash Address** field to `0x0`, choose the `..._merged.bin` file, and click **Program**.
+5. When it finishes, power-cycle the device (unplug/replug USB-C).
+
+### Option B: Standalone esptool (command line, still no Python needed)
+
+Espressif also publishes self-contained `esptool` executables — no Python or `pip install`
+required, just download and run:
+
+1. Download the build for your OS from the
+   [esptool releases page](https://github.com/espressif/esptool/releases) (Windows, macOS, and
+   Linux builds are all listed on each release) and extract it.
+2. Put the device in [Download Mode](#2-download-mode-m5stack-unit-cams3-5mp) if needed (see step 2 above).
+3. From the extracted folder, run (adjust the path to the downloaded `..._merged.bin` and, on
+   macOS/Linux, prefix the executable with `./`):
+
+   ```bash
+   esptool --chip esp32s3 -b 460800 \
+     --before default_reset --after hard_reset \
+     write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB \
+     0x0 unitcams3_py260_merged.bin
+   ```
+4. Power-cycle the device (unplug/replug USB-C) once flashing completes.
+
+*(If you already have Python and prefer `pip install esptool`, that still works identically —
+this is just the option for anyone who'd rather not.)*
 
 ### Verify provenance (optional)
 
@@ -206,8 +242,8 @@ the binary you downloaded was built from the published source — not modified b
 anyone — install the [GitHub CLI](https://cli.github.com/) and run:
 
 ```bash
-gh attestation verify unitcams3_merged.bin \
-  --repo hbentel/M5Stack-Unit-CamS3-5MP
+gh attestation verify unitcams3_py260_merged.bin \
+  --repo jaysuk/M5Stack-Unit-CamS3-5MP
 ```
 
 A passing result means the binary is provably linked to a specific Actions run
@@ -220,7 +256,7 @@ and source commit. No trust in the uploader required.
 ### 1. Clone
 
 ```bash
-git clone https://github.com/hbentel/M5Stack-Unit-CamS3-5MP.git esp32camera
+git clone https://github.com/jaysuk/M5Stack-Unit-CamS3-5MP.git esp32camera
 cd esp32camera
 ```
 
